@@ -1,0 +1,15 @@
+altgraph==0.17.5
+darkdetect==0.8.0
+importlib_metadata==8.7.1
+packaging==26.3
+pefile==2024.8.26
+pyinstaller==6.1.0
+pyinstaller-hooks-contrib==2026.7
+PyQt-Fluent-Widgets==1.11.3
+PyQt5==5.15.11
+PyQt5-Frameless-Window==0.8.2
+PyQt5-Qt5==5.15.2
+PyQt5_sip==12.17.1
+pywin32==312
+pywin32-ctypes==0.2.3
+zipp==3.23.1

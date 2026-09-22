@@ -1,0 +1,51 @@
+# BACoffee Luna release runtime. Versions are read from the staged runtime's
+# *.dist-info metadata (or the module version for pyparsing). The runtime is
+# shipped offline; these entries document the reproducible input set rather
+# than instructing the end user to install from the network.
+python==3.9.13
+numpy==1.24.4
+opencv-python==4.8.1.78
+Pillow==11.3.0
+requests==2.32.5
+psutil==7.0.0
+adbutils==2.2.1
+uiautomator2==2.16.23
+lxml==6.0.1
+rich==15.0.0
+Pygments==2.15.1
+retry==0.9.2
+filelock==3.19.1
+logzero==1.7.0
+packaging==20.9
+pyparsing==3.2.3
+six==1.17.0
+colorama==0.4.6
+wrapt==1.17.3
+xmltodict==0.14.2
+apkutils2==1.0.0
+cached-property==1.5.2
+certifi==2025.8.3
+charset-normalizer==3.4.3
+cigam==0.0.3
+Deprecated==1.2.18
+deprecation==2.1.0
+idna==3.10
+progress==1.6.1
+urllib3==2.5.0
+whichcraft==0.6.1
+
+# The following local compatibility modules are shipped as standalone .py
+# files and do not carry a separate distribution record: six, cached_property,
+# deprecation, whichcraft and xmltodict are still listed above by their source
+# package versions.
+
+# Build provenance:
+# - Interpreter: CPython 3.9.13 embeddable runtime.
+# - GUI: PyQt5/qfluentwidgets compiled into BACoffee.exe.
+# - Runtime site-packages: copied from the verified BAAS worker environment,
+#   then pruned of tests, caches, and unused packaging tooling.
+# - Rebuild must run the import, OCR-manifest, self-test, path, and ZIP scans
+#   recorded in test-report.md.
+
+# GUI-only dependencies are embedded in BACoffee.exe and are intentionally not
+# duplicated in runtime/Lib/site-packages.
