@@ -1,0 +1,26 @@
+--- a/core/picture.py
++++ b/core/picture.py
+@@ -139,6 +139,12 @@
+                         and self.last_click_position[0] == click[0] and self.last_click_position[1] == click[1]
+                         and self.last_click_name == img_feature):
+                         break
++                    image_name = img_feature[0] if isinstance(img_feature, tuple) else img_feature
++                    before_confirm = getattr(self, "_bacoffee_game_update_before_confirm", None)
++                    if image_name in ("main_page_game-download-resource-notice", "main_page_game-download-resource-notice2", "main_page_game-download-resource-notice3") and callable(before_confirm):
++                        if not before_confirm(image_name):
++                            break  # The known reaction was consumed; do not try closing this frame.
++                        feature_last_appear_time = time.time()
+                     self.logger.info(f"Image feature: {img_feature} -> Click @ ({click[0]},{click[1]})")
+                     if click[0] >= 0 and click[1] >= 0:
+                         self.last_click_time = feature_last_appear_time
+@@ -251,6 +257,10 @@
+             rgb_diff = img_feature[2]
+     else:
+         image_name = img_feature
++    if image_name == "main_page_game-download-resource-notice":
++        match_download = getattr(self, "_bacoffee_game_update_match", None)
++        if callable(match_download) and match_download():
++            return True
+     return image.compare_image(self, image_name, threshold, rgb_diff)
+ 
+ 

@@ -1,10 +1,11 @@
-param([switch]$NoElevation)
+param([switch]$NoElevation, [string]$RequestId = '')
 $ErrorActionPreference = 'Stop'
 
 $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
 if (-not $NoElevation -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $arguments = @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath))
+    if ($RequestId) { $arguments += @('-RequestId', $RequestId) }
     $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru
     exit $elevated.ExitCode
 }
@@ -191,6 +192,24 @@ try {
         $triggerStart = Convert-ToLocalDateTime $_.StartBoundary
         if ($null -ne $triggerStart) { $triggerStart.ToString('yyyy-MM-ddTHH:mm:ss', $culture) }
     })
+    $verifiedTriggers = @($registeredTask.Triggers | ForEach-Object {
+        $kind = [string]$_.CimClass.CimClassName
+        $daily = $kind -eq 'MSFT_TaskDailyTrigger'
+        [pscustomobject]@{
+            trigger_type = if ($daily) { 'Daily' } else { $kind }
+            start_boundary = [string]$_.StartBoundary
+            days_interval = if ($daily) { [int]$_.DaysInterval } else { 0 }
+            enabled = [bool]$_.Enabled
+        }
+    })
+    if ($RequestId -and $null -eq $override) {
+        $badDefaults = @($verifiedTriggers | Where-Object {
+            $_.trigger_type -ne 'Daily' -or $_.days_interval -ne 1 -or -not $_.enabled
+        })
+        if ($verifiedTriggers.Count -ne 8 -or $badDefaults.Count -gt 0) {
+            throw 'Default daily trigger verification failed.'
+        }
+    }
     $expectedStarts = @($planned | ForEach-Object { $_.start_boundary })
     $missing = @($expectedStarts | Where-Object { $actualStarts -notcontains $_ })
     if (-not $wakeToRun) { throw 'WakeToRun was not retained.' }
@@ -215,9 +234,12 @@ try {
     $sleepCapabilities = (& powercfg /a 2>&1 | Out-String).Trim()
     $wakeTimers = (& powercfg /waketimers 2>&1 | Out-String).Trim()
     Write-ScheduleStatus @{
+        request_id = $RequestId
+        verified_triggers = @($verifiedTriggers)
         success = $true
         installed = $true
-        installed_at = (Get-Date).ToString('o')
+        installed_at = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss.ffffffK')
+        planned_at = $now.ToString('yyyy-MM-ddTHH:mm:ss.ffffffK')
         next_run_time = $nextRun
         task_name = $taskName
         wake_to_run = $wakeToRun
@@ -250,6 +272,7 @@ try {
         $rollbackError = $_.Exception.Message
     }
     Write-ScheduleStatus @{
+        request_id = $RequestId
         success = $false
         installed = $hadExistingTask
         task_name = $taskName

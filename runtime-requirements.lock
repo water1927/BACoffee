@@ -1,4 +1,4 @@
-# BACoffee Luna release runtime. Versions are read from the staged runtime's
+# BACoffee release runtime. Versions are read from the staged runtime's
 # *.dist-info metadata (or the module version for pyparsing). The runtime is
 # shipped offline; these entries document the reproducible input set rather
 # than instructing the end user to install from the network.

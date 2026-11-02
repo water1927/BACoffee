@@ -1,0 +1,119 @@
+--- a/module/cafe_reward.py
++++ b/module/cafe_reward.py
+@@ -233,21 +233,13 @@
+     return picture.co_detect(self, None, None, img_end, img_possible, skip_first_screenshot)
+ 
+ 
+-def checkConfirmInvite(self, y):
+-    res = to_confirm_invite(self, (785, y))
+-    f = False
+-    if res == 'cafe_switch-clothes-notice' and not self.config.cafe_reward_allow_exchange_student:
+-        self.logger.warning("Not Allow Student Switch Clothes")
+-        f = True
+-    elif (res == 'cafe_duplicate-invite' or res == 'cafe_duplicate-invite-notice') \
+-            and not self.config.cafe_reward_allow_duplicate_invite:
+-        self.logger.warning("Not Allow Duplicate Invite")
+-        f = True
+-    if f:
+-        to_invitation_ticket(self, skip_first_screenshot=True)
+-        return False
+-    confirm_invite(self)
+-    return True
++def checkConfirmInvite(self, y, bac_candidate=None):
++    if isinstance(bac_candidate, dict):
++        bac_candidate["phase"] = "opening_candidate"
++    feature = to_confirm_invite(self, (785, y), bac_candidate=bac_candidate)
++    if isinstance(bac_candidate, dict):
++        bac_candidate.update(last_feature=feature, phase="confirmation_chain")
++    return confirm_invite(self, bac_candidate=bac_candidate, first_feature=feature)
+ 
+ 
+ def invite_by_affection(self, affection_order):
+@@ -326,7 +318,7 @@
+     picture.co_detect(self, None, None, img_ends, img_possibles, True)
+ 
+ 
+-def to_confirm_invite(self, lo):
++def to_confirm_invite(self, lo, bac_candidate=None):
+     img_possibles = {
+         'cafe_invitation-ticket': lo,
+     }
+@@ -336,19 +328,74 @@
+         "cafe_duplicate-invite-notice",
+         "cafe_duplicate-invite",
+     ]
++    if bac_candidate is not None:
++        deadline = getattr(self, "bacoffee_invitation_deadline", None)
++        remaining = 600 if deadline is None else deadline - time.monotonic()
++        if remaining <= 0:
++            raise picture.FunctionCallTimeout("Invitation confirmation budget reached")
++        return picture.co_detect(self, None, None, img_ends, img_possibles, True, tentative_click=False, time_out=remaining)
+     return picture.co_detect(self, None, None, img_ends, img_possibles, True)
+ 
+ 
+-def confirm_invite(self):
+-    img_possibles = {
++def confirm_invite(self, bac_candidate=None, first_feature=None):
++    reactions = {
+         "cafe_confirm-invite": (767, 514),
+         "cafe_duplicate-invite": (767, 514),
+         "cafe_switch-clothes-notice": (764, 501),
+         "cafe_duplicate-invite-notice": (764, 514),
+         "cafe_students-arrived": (922, 189)
+     }
+-    img_ends = "cafe_menu"
+-    picture.co_detect(self, None, None, img_ends, img_possibles, True)
++    context = bac_candidate if isinstance(bac_candidate, dict) else {}
++    selected_candidate = bool(context.get("candidate") and context.get("cafe_no") in (1, 2))
++    def record_step(step):
++        context.update(last_feature=step["feature"], phase=step.get("phase", "confirmation_chain"))
++        if isinstance(context.get("steps"), list):
++            steps = context["steps"]
++            if not steps or steps[-1] != step:
++                steps.append(step)
++                del steps[:-14]
++                callback = context.get("on_step")
++                if callable(callback):
++                    callback(step)
++
++    feature = first_feature
++    for _ in range(12):
++        deadline = getattr(self, "bacoffee_invitation_deadline", None)
++        remaining = 600 if deadline is None else deadline - time.monotonic()
++        if remaining <= 0:
++            raise picture.FunctionCallTimeout("Invitation confirmation budget reached")
++        if feature is None:
++            feature = picture.co_detect(self, None, None, ["cafe_menu"] + list(reactions), None, True, time_out=remaining, tentative_click=False)
++        if feature == "cafe_menu":
++            context.update(menu_confirmed=True, awaiting_after=None)
++            record_step({"feature": feature, "decision": "complete", "reason": "menu_confirmed", "phase": "complete"})
++            return True
++        if feature not in reactions:
++            record_step({"feature": feature, "decision": "uncertain", "reason": "unknown_feature"})
++            raise RuntimeError("Unknown invitation confirmation feature: " + str(feature))
++        exchange = bool(self.config.cafe_reward_allow_exchange_student)
++        reason = "recognized_confirmation"
++        allowed = True
++        if feature == "cafe_switch-clothes-notice":
++            allowed = exchange
++            reason = "exchange_allowed" if allowed else "exchange_disabled"
++        elif feature in ("cafe_duplicate-invite", "cafe_duplicate-invite-notice"):
++            allowed = bool(self.config.cafe_reward_allow_duplicate_invite or selected_candidate and exchange)
++            reason = "selected_candidate_cross_cafe" if selected_candidate and exchange else "duplicate_allowed" if allowed else "cross_cafe_disabled"
++        decision = {"feature": feature, "exchange": exchange, "decision": "allow" if allowed else "reject", "reason": reason}
++        record_step(decision)
++        self.logger.info(f"[邀请确认] No.{context.get('cafe_no', '?')} candidate={context.get('candidate', '?')}; feature={feature}; exchange={exchange}; decision={decision['decision']}; reason={reason}")
++        if not allowed:
++            to_invitation_ticket(self, skip_first_screenshot=True)
++            return False
++        context.update(phase="awaiting_next_feature", awaiting_after=feature)
++        feature = picture.co_detect(self, None, None,
++                                    ["cafe_menu"] + [name for name in reactions if name != feature],
++                                    {feature: reactions[feature]}, True, time_out=remaining, tentative_click=False)
++        context.update(last_feature=feature, phase="feature_returned", awaiting_after=None)
++        if feature == "cafe_menu":
++            context["menu_confirmed"] = True
++    raise picture.FunctionCallTimeout("Invitation confirmation steps exceeded budget")
+ 
+ 
+ def invite_starred(self, no):

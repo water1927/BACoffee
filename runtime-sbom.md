@@ -1,6 +1,6 @@
-# BACoffee Luna runtime SBOM
+# BACoffee runtime SBOM
 
-Generated from the final staged runtime. License values are copied from each package METADATA file; where a package does not declare a concise SPDX value, the bundled metadata remains the source of truth.
+Components included in the Windows release. License values are copied from each package METADATA file; where a package does not declare a concise SPDX value, the bundled metadata remains the source of truth.
 
 | Component | Version | License metadata | Local record |
 |---|---:|---|---|
@@ -33,4 +33,4 @@ Generated from the final staged runtime. License values are copied from each pac
 | wrapt | 1.17.3 | BSD | wrapt-1.17.3.dist-info/METADATA |
 | xmltodict | 0.14.2 | MIT | xmltodict-0.14.2.dist-info/METADATA |
 
-The CPython 3.9.13 embeddable runtime is bundled from the verified build runtime. GUI packages are compiled into `BACoffee.exe`; they are not duplicated in `runtime/Lib/site-packages`.
+The Windows release includes the CPython 3.9.13 embeddable runtime. GUI dependencies are included in `BACoffee.exe`.

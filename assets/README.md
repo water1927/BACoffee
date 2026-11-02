@@ -1,7 +1,5 @@
-# Assets staging notice
+# 资源说明
 
-The public repository must contain only assets whose source and redistribution terms have been reviewed and documented.
+BACoffee 的界面资源位于 `assets/`，SAT 专用资源位于 `assets/sat/`。运行所需的完整资源随 Windows 发行包提供。
 
-The release build expects BACoffee assets under `assets/` and SAT-specific assets under `assets/sat/`. Student portraits, game-derived images, fonts, icons and backgrounds must not be committed merely because they are present in a local working build. Record their source, author, license or permission in `THIRD_PARTY_NOTICES.md` before publication.
-
-Large binary runtime dependencies and OCR models belong in GitHub Release assets, not in ordinary Git history.
+资源来源与许可见 [第三方声明](../THIRD_PARTY_NOTICES.md)。大型运行依赖和 OCR 模型通过 GitHub Releases 分发。

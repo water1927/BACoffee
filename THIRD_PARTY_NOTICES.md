@@ -6,13 +6,15 @@
 - Repository: `https://gitee.com/pur1fy/blue_archive_auto_script.git`
 - Pinned commit used by the current release: `5be8600f7f47008023046a51a5c084fb67e23b83`
 - License: GPL-3.0-only; the corresponding license text is included with the release.
-- Usage and changes: BACoffee vendors a release-specific BAAS worker and adapts its configuration, runtime loading, OCR integration and task orchestration for the BACoffee workflow. The public repository does not vendor the full runtime copy; the binary Release ZIP carries the reviewed runtime and BAAS files.
+- Usage and changes: BACoffee vendors a release-specific BAAS worker and adapts its configuration, runtime loading, OCR integration and task orchestration for the BACoffee workflow. The public repository does not vendor the full runtime copy; the binary Release ZIP includes the runtime and BAAS files.
+- Modified BAAS files support game-update prompts, invitation confirmation and screenshot handling. The Release ZIP includes the complete modified Python files. Corresponding source references and patches are listed in `third_party/BAAS_SOURCE.md`.
 
 ## BASH
 
-BACoffee is described as a secondary development based on BAAS and BASH-related code and workflows, with functional improvements, workflow integration and UI redesign. This Release does not ship `BASH.exe` or a separately installed BASH distribution. The coffee-invitation orchestration in this package is implemented in BACoffee around the vendored BAAS worker.
-
-No BASH upstream repository, version, copyright notice or license is invented or asserted without verified evidence. Any BASH-origin material remains subject to the rights and license terms of its original author or rights holder.
+- Project: BASH.
+- Project source page: <https://www.bilibili.com/video/BV1both6kE65/>.
+- Usage and changes: BACoffee references BASH-related student portrait matching and invitation workflows, integrated into BACoffee's invitation implementation. Cafe interaction actions and invitation confirmation use the vendored BAAS worker. This Release does not ship a separate BASH executable.
+- Attribution: Credit for BASH-origin code, resources and workflows belongs to the original BASH authors. Such material remains subject to its original license and rights holder terms.
 
 ## Other assets
 

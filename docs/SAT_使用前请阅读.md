@@ -1,12 +1,12 @@
 # BACoffee SAT 使用前请阅读
 
-BACoffee SAT（Student Add Tool）是 BACoffee 的附属学生头像导入工具，用于把用户准备的头像图片检查、裁剪并导入 BACoffee 的外置学生头像库。SAT 不是独立的游戏自动化程序，不启动模拟器、不执行咖啡厅任务，也不会替代 BACoffee 主程序。
+BACoffee SAT（Student Add Tool）是 BACoffee 的附属学生头像导入工具，用于把用户准备的头像图片检查、裁剪并导入 BACoffee 的外置学生头像库。
 
 ## 一、运行前须知
 
 1. 请从 BACoffee 官方 GitHub Release 下载完整发行包，并先将压缩包完整解压。
 2. 请保持 `BACoffee SAT.exe`、`BACoffee.exe`、`runtime`、`assets` 和 `user_assets` 的相对目录结构不变。
-3. SAT 使用发行包内 BACoffee 自带的便携 Python、OpenCV、NumPy 和 Pillow；用户不需要、也不应另行安装或配置 Python。
+3. SAT 使用发行包内 BACoffee 自带的便携 Python、OpenCV、NumPy 和 Pillow；用户不需要另行安装或配置 Python。
 4. 不要单独复制 `BACoffee SAT.exe` 到桌面或其他目录运行。缺少 BACoffee 运行时会导致 SAT 无法启动。
 5. 建议把整个 BACoffee 文件夹放在普通、可写的目录中，不要直接在压缩包内运行，也不要放在需要额外写入权限的系统目录中。
 
@@ -17,7 +17,7 @@ BACoffee SAT（Student Add Tool）是 BACoffee 的附属学生头像导入工具
 - SAT 的默认写入位置是 `user_assets\students`。
 - BACoffee 启动或重新打开学生选择界面时，会同时读取内置头像库和外置头像库。
 - 如果外置头像与内置头像完整文件名相同（不区分大小写），BACoffee 以内置头像为准。
-- 删除 SAT 不影响 BACoffee 已有的主要自动化功能，但会失去图形化头像导入工具。
+- 删除 SAT 不影响 BACoffee 已有的自动化功能。
 
 ## 三、使用方法
 
@@ -38,7 +38,6 @@ BACoffee SAT（Student Add Tool）是 BACoffee 的附属学生头像导入工具
 - 单个导入结果不得超过 5 MB。
 - SAT 不会覆盖内置学生头像。
 - 遇到外置库同名文件时，SAT 会要求用户明确选择是否替换；默认操作是取消。
-- 导入采用临时文件写入和完成后替换方式，以降低中途中断造成损坏的风险。
 - 重要头像请自行保留原图备份。不要把 `user_assets\students` 当作唯一图片备份位置。
 - 发布问题报告前，请检查截图、文件名和本地路径中是否含有不希望公开的信息。
 

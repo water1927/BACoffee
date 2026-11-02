@@ -31,6 +31,8 @@ from datetime import datetime, timedelta, timezone
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+# GUI assets are shared beside both entry points, rather than copied into EXEs.
+RESOURCE_DIR = APP_DIR if getattr(sys, "frozen", False) else BUNDLE_DIR
 DATA_DIR = APP_DIR / "data"
 EMBEDDED_STUDENT_ASSET_DIR = BUNDLE_DIR / "assets" / "students"
 RELEASE_STUDENT_ASSET_DIR = APP_DIR / "assets" / "students"
@@ -43,19 +45,19 @@ BUILD_METADATA_FILE_NAME = "build-metadata.json"
 USER_STUDENT_DIR = APP_DIR / "user_assets" / "students"
 STUDENT_PNG_MAX_BYTES = 5 * 1024 * 1024
 STUDENT_AVATAR_SIZE = 92
-UI_ASSET_DIR = BUNDLE_DIR / "assets" / "ui"
-BACKGROUND_DIR = BUNDLE_DIR / "assets" / "background"
+UI_ASSET_DIR = RESOURCE_DIR / "assets" / "ui"
+BACKGROUND_DIR = RESOURCE_DIR / "assets" / "background"
 EASTER_EGG_FILE = BACKGROUND_DIR / "居然是彩蛋吗！.txt"
 LIGHT_BACKGROUNDS = ["青空笺语.png", "光 · 青叶 · 望.jpg"]
 DARK_BACKGROUNDS = ["夜与月色.jpg", "Suger Rush!!!!.jpg"]
 LIGHT_BACKGROUND_LABELS = [Path(name).stem for name in LIGHT_BACKGROUNDS]
 DARK_BACKGROUND_LABELS = [Path(name).stem for name in DARK_BACKGROUNDS]
 CUSTOM_BACKGROUND_LABEL = "自定义图片"
-BRANDING_DIR = BUNDLE_DIR / "assets" / "branding"
+BRANDING_DIR = RESOURCE_DIR / "assets" / "branding"
 COFFEE_LOGO = BRANDING_DIR / "Coffee.png"
 COFFEE_DARK_LOGO = BRANDING_DIR / "Coffee_Dark.png"
 COFFEE_ICON = BRANDING_DIR / "Coffee.ico"
-FONT_DIR = BUNDLE_DIR / "assets" / "fonts"
+FONT_DIR = RESOURCE_DIR / "assets" / "fonts"
 COMFORTAA_LIGHT = FONT_DIR / "Comfortaa-Light.ttf"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 PROFILE_DIR = DATA_DIR / "baas_profile"
@@ -75,7 +77,7 @@ PORTABLE_SITE_PACKAGES = RUNTIME_DIR / "Lib" / "site-packages"
 PORTABLE_PYTHON = RUNTIME_DIR / "python.exe"
 DEFAULT_PYTHON = PORTABLE_PYTHON
 DEFAULT_MUMU_MANAGER = ""
-CN_GAME_SERVERS = ("B服", "官服")
+CN_GAME_SERVERS = ("官服", "B服")
 
 
 def _sha256_file(path: Path) -> str | None:
@@ -152,6 +154,7 @@ BASH_HIGH_CONFIDENCE_SCORE = 0.82
 BASH_RECHECK_MIN_SCORE = 0.64
 BASH_MIN_MARGIN = 0.08
 BASH_RECHECK_CENTER_TOLERANCE = 5
+BASH_CROP_ADJUST_MIN_SCORE = 0.55
 
 
 def runtime_site_packages(_baas_root: Path | None = None) -> Path:
@@ -201,10 +204,12 @@ DEFAULT_SETTINGS = {
     "cafe2": True,
     "collect_reward": False,
     "invite_student": True,
+    "invite_allow_exchange_student": False,
+    "auto_download_game_updates": False,
     "pat_rounds": 4,
     "schedule_times": ["04:00", "07:10", "10:20", "13:30", "16:00", "19:10", "22:20", "01:30"],
     "schedule_override": None,
-    "game_server": "B服",
+    "game_server": "官服",
     "hibernate_after_success": True,
     "wake_stabilization_seconds": 10,
     "scheduled_task_timeout_minutes": 30,
@@ -212,7 +217,7 @@ DEFAULT_SETTINGS = {
     "mumu_manager_path": DEFAULT_MUMU_MANAGER,
     "mumu_vm_index": 1,
     "mumu_android_version": "15",
-    "mumu_start_wait_seconds": 60,
+    "mumu_start_wait_seconds": 30,
     "theme": "system",
     "background_image": "",
     "light_background_choice": LIGHT_BACKGROUNDS[0],
@@ -221,7 +226,7 @@ DEFAULT_SETTINGS = {
     "custom_dark_background": "",
     "background_opacity": 50,
     "hide_home_brand": False,
-    "minimize_to_tray": True,
+    "minimize_to_tray": False,
     "tray_notice_seen": False,
     "window_x": None,
     "window_y": None,
@@ -240,7 +245,7 @@ DEFAULT_SETTINGS = {
 
 
 def normalize_game_server(value: object) -> str:
-    return value if isinstance(value, str) and value in CN_GAME_SERVERS else "B服"
+    return value if isinstance(value, str) and value in CN_GAME_SERVERS else "官服"
 
 
 def load_settings() -> dict:
@@ -269,7 +274,7 @@ def load_settings() -> dict:
     game_server = data.get("game_server")
     normalized_game_server = normalize_game_server(game_server)
     if normalized_game_server != game_server:
-        append_log("[渠道] 配置值无效，已回退到 B服。")
+        append_log("[渠道] 配置值无效，已回退到官服。")
         data["game_server"] = normalized_game_server
     # The old one-shot defer fields were only consumed by a blocking worker
     # sleep.  Remove them during migration so they can never drive execution.
@@ -412,8 +417,11 @@ def load_student_catalog() -> dict[str, dict]:
         append_log(f"[学生库] 忽略内置文件 {name}：{reason}")
     expected_count = expected_builtin_student_count()
     count_note = f"；发行清单数量：{expected_count}" if expected_count is not None else ""
-    append_log(
-        f"[学生库] 内置库路径：{builtin_dir.resolve()}；实际载入数量：{len(builtin_paths)}{count_note}")
+    global _CATALOG_LOG_SUMMARY
+    summary = (str(builtin_dir), len(builtin_paths), expected_count)
+    if summary != _CATALOG_LOG_SUMMARY:
+        append_log(f"[学生库] 内置 {len(builtin_paths)} 张{count_note}")
+        _CATALOG_LOG_SUMMARY = summary
     if expected_count is not None and expected_count != len(builtin_paths):
         append_log(
             f"[学生库] 内置库数量与发行清单不一致：实际 {len(builtin_paths)}，清单 {expected_count}")
@@ -599,12 +607,12 @@ def _read_schedule_status() -> dict:
         return {}
 
 
-def _run_wake_task_update() -> subprocess.CompletedProcess:
+def _run_wake_task_update(request_id: str = "") -> subprocess.CompletedProcess:
     script = APP_DIR / "Install-WakeTask.ps1"
     if not script.is_file():
         raise RuntimeError("发行内容不完整：缺少 Install-WakeTask.ps1。")
     return subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *(["-RequestId", request_id] if request_id else [])],
         cwd=str(APP_DIR), text=True, encoding="utf-8", errors="replace", capture_output=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -665,12 +673,729 @@ def apply_schedule_override(override: dict) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _verify_default_schedule_update(result, request_id: str, started: datetime,
+                                    *, restoring: bool = False) -> None:
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "计划安装失败").strip()[-1200:])
+    status = _read_schedule_status()
+    if status.get("request_id") != request_id:
+        raise RuntimeError("默认计划状态不是本次安装产生的结果。")
+    try:
+        installed_at = datetime.fromisoformat(status["installed_at"])
+        installed_at = installed_at.astimezone().replace(tzinfo=None)
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError("默认计划缺少有效的安装确认时间。")
+    if not started <= installed_at <= datetime.now() + timedelta(seconds=5):
+        raise RuntimeError("默认计划安装确认时间已陈旧或无效。")
+    try:
+        planned_at = datetime.fromisoformat(status["planned_at"]).astimezone().replace(tzinfo=None)
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError("默认计划缺少本次触发器计算时间。")
+    if not started <= planned_at <= installed_at:
+        raise RuntimeError("默认计划触发器计算时间无效。")
+    allowed = ("default", "invalid_or_expired") if restoring else ("default",)
+    if (status.get("success") is not True or status.get("installed") is not True
+            or status.get("override_active") is not False
+            or status.get("override_status") not in allowed
+            or status.get("wake_to_run") is not True):
+        raise RuntimeError(str(status.get("error") or "Windows 未确认恢复默认唤醒计划。"))
+    triggers = status.get("verified_triggers") or []
+    expected = {"01:30", "04:00", "07:10", "10:20", "13:30", "16:00", "19:10", "22:20"}
+    clocks = set()
+    starts = set(status.get("verified_trigger_starts") or [])
+    for trigger in triggers:
+        try:
+            first = datetime.fromisoformat(trigger["start_boundary"])
+            clock = first.strftime("%H:%M")
+            next_at = planned_at.replace(hour=first.hour, minute=first.minute, second=0, microsecond=0)
+            if next_at <= planned_at:
+                next_at += timedelta(days=1)
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("默认计划触发器回读无效。")
+        if (trigger.get("trigger_type") != "Daily" or trigger.get("days_interval") != 1
+                or trigger.get("enabled") is not True or first != next_at
+                or first.isoformat(timespec="seconds") not in starts):
+            raise RuntimeError("默认计划回读包含非每日、禁用或日期不符的触发器。")
+        clocks.add(clock)
+    if len(triggers) != 8 or len(starts) != 8 or clocks != expected or status.get("trigger_count") != 8:
+        raise RuntimeError("Windows 回读未确认原有八个每日默认时刻。")
+
+
+def restore_default_schedule() -> tuple[bool, str]:
+    """Restore the default task and keep settings/task failures visible."""
+    original = deepcopy(load_settings())
+    candidate = deepcopy(original)
+    candidate["schedule_override"] = None
+    request_id = secrets.token_hex(16)
+    started = datetime.now()
+    result = None
+    try:
+        save_settings_atomic(candidate)
+        result = _run_wake_task_update(request_id)
+        _verify_default_schedule_update(result, request_id, started)
+        append_log("[schedule] default schedule verified; daily triggers=8")
+        return True, ""
+    except Exception as exc:
+        try:
+            save_settings_atomic(original)
+        except Exception as restore_exc:
+            return False, f"{exc}；设置回滚失败：{restore_exc}；请核对实际计划状态。"
+        status = _read_schedule_status()
+        # A successful script with an invalid confirmation may already have
+        # registered the default task. Reinstall the saved schedule explicitly.
+        if result is not None and result.returncode == 0:
+            try:
+                rollback_id = secrets.token_hex(16)
+                rollback_started = datetime.now()
+                rollback = _run_wake_task_update(rollback_id)
+                rollback_status = _read_schedule_status()
+                if rollback_status.get("request_id") != rollback_id:
+                    raise RuntimeError("计划回滚确认不是本次结果")
+                if valid_schedule_override(original):
+                    _verify_schedule_update(original, rollback)
+                else:
+                    _verify_default_schedule_update(rollback, rollback_id, rollback_started, restoring=True)
+            except Exception as rollback_exc:
+                return False, f"{exc}；系统计划回滚失败：{rollback_exc}；原设置已恢复，实际计划请核对。"
+            return False, f"{exc}；原设置和原计划已恢复。"
+        if status.get("request_id") == request_id and status.get("rollback_succeeded") is False:
+            return False, f"{exc}；系统计划回滚失败：{status.get('rollback_error', '')}；原设置已恢复，实际计划请核对。"
+        return False, f"{exc}；原设置已恢复，未确认恢复默认计划成功。"
+
+
+_IPC_USER_SID = None
+
+
+def _ipc_security(kernel):
+    """Same-user mutexes work for elevated schedules and ordinary manual workers."""
+    global _IPC_USER_SID
+    from ctypes import wintypes
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    if _IPC_USER_SID is None:
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        token = wintypes.HANDLE()
+        if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            size = wintypes.DWORD()
+            advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            data = ctypes.create_string_buffer(size.value)
+            if not advapi.GetTokenInformation(token, 1, data, size, ctypes.byref(size)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            sid = ctypes.cast(data, ctypes.POINTER(ctypes.c_void_p))[0]
+            text = wintypes.LPWSTR()
+            if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                _IPC_USER_SID = text.value
+            finally:
+                kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+        finally:
+            kernel.CloseHandle(token)
+    class Attributes(ctypes.Structure):
+        _fields_ = [("length", wintypes.DWORD), ("descriptor", ctypes.c_void_p), ("inherit", wintypes.BOOL)]
+    descriptor = ctypes.c_void_p()
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    # This labels only our newly created IPC object, not system/global settings.
+    sddl = f"D:(A;;GA;;;{_IPC_USER_SID})S:(ML;;NW;;;ME)"
+    if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return Attributes(ctypes.sizeof(Attributes), descriptor, False), descriptor
+
+
+class _NamedMutex:
+    """A kernel mutex, automatically abandoned/released if its process exits."""
+    def __init__(self, purpose, path=None):
+        from ctypes import wintypes
+        scope = os.path.normcase(os.path.abspath(str(path or DATA_DIR)))
+        digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        self.kernel.CreateMutexW.restype = wintypes.HANDLE
+        self.kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self.kernel.WaitForSingleObject.restype = wintypes.DWORD
+        self.kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+        self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        attributes, descriptor = _ipc_security(self.kernel)
+        try:
+            self.handle = self.kernel.CreateMutexW(ctypes.byref(attributes), False, f"Local\\BACoffee.{purpose}.{digest}")
+        finally:
+            self.kernel.LocalFree(descriptor)
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.held = False
+
+    def acquire(self, timeout=0):
+        result = self.kernel.WaitForSingleObject(self.handle, max(0, int(timeout * 1000)))
+        if result in (0, 0x80):
+            self.held = True
+            return True
+        if result != 0x102:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return False
+
+    def close(self):
+        if self.handle:
+            if self.held:
+                self.kernel.ReleaseMutex(self.handle)
+                self.held = False
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+
+
+_LOG_THREAD_LOCK = threading.RLock()
+_LOG_MAINTAINED = {}
+_LOG_RETRY_AT = {}
+_LOG_PENDING = []
+_CATALOG_LOG_SUMMARY = None
+
+
+def _trim_main_log(text: str, now: datetime) -> str:
+    cutoff = (now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+    kept = []
+    keep_record = True
+    for line in text.splitlines(keepends=True):
+        match = re.match(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]", line)
+        if match:
+            try:
+                keep_record = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S") >= cutoff
+            except ValueError:
+                keep_record = True
+        elif line.startswith("["):
+            # An unknown record must not be discarded using a previous date.
+            keep_record = True
+        if keep_record:
+            kept.append(line)
+    return "".join(kept)
+
+
+def _maintain_main_log(now: datetime) -> None:
+    """Called only while the cross-process append/maintenance mutex is held."""
+    key = str(LOG_FILE)
+    if _LOG_MAINTAINED.get(key) == now.date() or time.monotonic() < _LOG_RETRY_AT.get(key, 0):
+        return
+    temporary = None
+    try:
+        if LOG_FILE.exists():
+            with LOG_FILE.open("r", encoding="utf-8", newline="") as handle:
+                original = handle.read()
+            retained = _trim_main_log(original, now)
+            if retained != original:
+                fd, name = tempfile.mkstemp(prefix=".BACoffee-log-", suffix=".tmp", dir=str(LOG_FILE.parent))
+                temporary = Path(name)
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                    handle.write(retained)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, LOG_FILE)
+        _LOG_MAINTAINED[key] = now.date()
+        _LOG_RETRY_AT.pop(key, None)
+    except (OSError, UnicodeError) as exc:
+        _LOG_RETRY_AT[key] = time.monotonic() + 30
+        print(f"[日志] 七天维护暂缓，原文件保留：{exc}", flush=True)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def append_log(message: str) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}"
-    with LOG_FILE.open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
+    now = datetime.now()
+    line = f"[{now:%Y-%m-%d %H:%M:%S}] {message}"
+    with _LOG_THREAD_LOCK:
+        mutex = None
+        _LOG_PENDING.append(line + "\n")
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            mutex = _NamedMutex("log", LOG_FILE)
+            if not mutex.acquire(5):
+                raise TimeoutError("日志锁等待超时")
+            _maintain_main_log(now)
+            with LOG_FILE.open("a", encoding="utf-8", newline="") as handle:
+                handle.write("".join(_LOG_PENDING))
+            _LOG_PENDING.clear()
+        except (OSError, TimeoutError) as exc:
+            # Never append without the mutex: a concurrent replace would lose it.
+            print(f"[日志] 写入暂缓，将在后续写入时重试：{exc}", flush=True)
+        finally:
+            if mutex is not None:
+                mutex.close()
     print(line, flush=True)
+
+
+class WorkerCancelled(BaseException):
+    """Bypass BAAS broad Exception handlers and their automatic game recovery."""
+
+
+_WORKER_TOKEN = ""
+_WORKER_CANCELLED = threading.Event()
+_WORKER_BAAS = None
+_WORKER_MONITOR_STOP = threading.Event()
+
+
+def _manual_pending() -> bool:
+    mutex = _NamedMutex("manual")
+    try:
+        return not mutex.acquire(0)
+    finally:
+        mutex.close()
+
+
+def _owner_state() -> dict:
+    try:
+        value = json.loads((DATA_DIR / "worker-owner.json").read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_owner(state: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = DATA_DIR / "worker-owner.json"
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def worker_checkpoint() -> None:
+    if _WORKER_CANCELLED.is_set():
+        raise WorkerCancelled("被手动任务接管")
+
+
+def worker_sleep(seconds: float) -> None:
+    if _WORKER_TOKEN:
+        if _WORKER_CANCELLED.wait(max(0, seconds)):
+            worker_checkpoint()
+    else:
+        time.sleep(seconds)
+
+
+
+
+
+def _guard_baas_actions(thread_obj) -> None:
+    """Fence asynchronous click threads too, without editing third-party code."""
+    for target, names in (
+        (thread_obj, ("click", "click_thread", "get_screenshot_array", "solve", "exit_emulator")),
+        (getattr(thread_obj, "control", None), ("click", "swipe", "long_click", "scroll")),
+        (getattr(thread_obj, "connection", None), ("launch_app", "close_current_app", "start_app")),
+    ):
+        if target is None:
+            continue
+        for name in names:
+            original = getattr(target, name, None)
+            if not callable(original):
+                continue
+            def guarded(*args, _original=original, **kwargs):
+                worker_checkpoint()
+                value = _original(*args, **kwargs)
+                worker_checkpoint()
+                return value
+            setattr(target, name, guarded)
+
+
+def _stop_owned_ocr(result: dict) -> None:
+    pid = result.get("ocr_server_pid")
+    created = result.get("ocr_server_created")
+    if not pid or not created:
+        return
+    try:
+        import psutil
+        process = psutil.Process(int(pid))
+        if (abs(process.create_time() - float(created)) < 0.01
+                and os.path.normcase(process.exe()) == os.path.normcase(result.get("ocr_server_exe", ""))):
+            process.terminate()
+            try:
+                process.wait(3)
+            except psutil.TimeoutExpired:
+                process.kill()
+                process.wait(3)
+    except Exception as exc:
+        append_log(f"[任务互斥] 本轮 OCR 收尾提示：{exc}")
+
+
+class _OwnedJob:
+    """Own the payload and its spawned controllers, excluding explicit helpers/VM launch."""
+    def __init__(self, name=None, silent_breakaway=False):
+        from ctypes import wintypes
+        class Limits(ctypes.Structure):
+            _fields_ = [("process_time", ctypes.c_int64), ("job_time", ctypes.c_int64),
+                        ("flags", wintypes.DWORD), ("minimum", ctypes.c_size_t),
+                        ("maximum", ctypes.c_size_t), ("active_limit", wintypes.DWORD),
+                        ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD),
+                        ("scheduling", wintypes.DWORD)]
+        class IO(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in ("r", "w", "o", "rb", "wb", "ob")]
+        class Extended(ctypes.Structure):
+            _fields_ = [("basic", Limits), ("io", IO), ("process_memory", ctypes.c_size_t),
+                        ("job_memory", ctypes.c_size_t), ("peak_process", ctypes.c_size_t),
+                        ("peak_job", ctypes.c_size_t)]
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        self.kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        self.kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        self.kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        self.kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        self.kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+        self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        if name is None:
+            self.handle = self.kernel.CreateJobObjectW(None, None)
+        else:
+            attributes, descriptor = _ipc_security(self.kernel)
+            try:
+                self.handle = self.kernel.CreateJobObjectW(ctypes.byref(attributes), name)
+            finally:
+                self.kernel.LocalFree(descriptor)
+        limits = Extended()
+        limits.basic.flags = 0x2000 | (0x1000 if silent_breakaway else 0x800)  # KILL_ON_CLOSE; separate instance lifetime
+        if not self.handle or not self.kernel.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            error = ctypes.get_last_error()
+            self.close()
+            raise ctypes.WinError(error)
+
+    def attach(self, process):
+        if not self.kernel.AssignProcessToJobObject(self.handle, int(process._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def terminate(self):
+        if not self.kernel.TerminateJobObject(self.handle, 76):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def wait_empty(self):
+        deadline = time.monotonic() + 5
+        while True:
+            accounting = ctypes.create_string_buffer(48)
+            if not self.kernel.QueryInformationJobObject(self.handle, 1, accounting, 48, None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if ctypes.c_uint32.from_buffer(accounting, 40).value == 0:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError("本轮控制进程尚未全部退出，拒绝交接")
+            worker_sleep(0.01)
+
+    def close(self):
+        if self.handle:
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+
+
+def _forward_worker_output(stream):
+    """Drain payload output even after the supervisor's output sink disappears."""
+    import codecs
+    import io
+
+    decoder = io.IncrementalNewlineDecoder(
+        codecs.getincrementaldecoder("utf-8")(errors="replace"), translate=True)
+    output = sys.stdout
+
+    def forward(text):
+        nonlocal output
+        if output is not None and text:
+            try:
+                output.write(text)
+                output.flush()
+            except (OSError, ValueError, UnicodeError):
+                # Do not flush a broken pipe again during interpreter shutdown:
+                # that would replace the payload's exit status with Python's 120.
+                if sys.stdout is output:
+                    sys.stdout = None
+                output = None
+
+    try:
+        while True:
+            chunk = stream.read1(8192)
+            if not chunk:
+                break
+            forward(decoder.decode(chunk))
+        forward(decoder.decode(b"", final=True))
+    except (OSError, ValueError):
+        pass
+    finally:
+        stream.close()
+
+
+def run_worker(scheduled: bool = False) -> int:
+    """Own execution until the isolated payload and its control threads exit."""
+    manual = _NamedMutex("manual") if not scheduled else None
+    execution = _NamedMutex("execution")
+    process = None
+    token = secrets.token_hex(16)
+    owned = False
+    barrier = None
+    job = None
+    launch_job = None
+    output_thread = None
+    try:
+        if manual is not None and not manual.acquire(0):
+            append_log("[任务互斥] 已有手动任务／正在接管，不重复启动。")
+            return 75
+        if scheduled:
+            if _manual_pending():
+                append_log("[任务互斥] 计划任务跳过：手动任务执行中或正在接管。")
+                return 0
+            if not execution.acquire(0):
+                append_log("[任务互斥] 计划任务跳过：已有任务执行中，不排队。")
+                return 0
+            if _manual_pending():
+                append_log("[任务互斥] 计划任务跳过：手动请求优先。")
+                return 0
+        else:
+            if not execution.acquire(0):
+                append_log("[任务互斥] 正在停止计划任务，准备手动执行。")
+                deadline = time.monotonic() + 35
+                while not execution.acquire(0.1):
+                    if time.monotonic() >= deadline:
+                        append_log("[任务互斥] 无法安全交接：旧任务未在 35 秒内退出；本次手动任务未启动。")
+                        return 75
+        owned = True
+        # The payload barrier also fences a child surviving a crashed supervisor.
+        barrier = _NamedMutex("payload")
+        if not barrier.acquire(5):
+            append_log("[任务互斥] 旧执行器尚未退出，无法安全交接。")
+            return 75
+        previous = _owner_state()
+        _drain_previous_jobs(previous.get("token", ""))
+        handoff = bool(not scheduled and (previous.get("handoff_preserve") or (
+            previous.get("mode") == "scheduled" and (
+                previous.get("exit_code") == 124 or not previous.get("finished")))))
+        state = {"token": token, "pid": os.getpid(), "payload_ready": False, "mode": "scheduled" if scheduled else "manual",
+                 "cancel_requested": False, "handoff_preserve": False}
+        _write_owner(state)
+        # Only the execution owner may commit GUI-requested settings or cancel helpers.
+        if not scheduled and os.environ.get("BACOFFEE_MANUAL_SETTINGS"):
+            settings = json.loads(os.environ["BACOFFEE_MANUAL_SETTINGS"])
+            if not isinstance(settings, dict):
+                raise ValueError("手动任务设置不是对象")
+            save_settings(settings)
+        invalidate_hibernate_request("execution_owner_started")
+        barrier.close()
+        barrier = None
+        environment = os.environ.copy()
+        environment["BACOFFEE_WORKER_TOKEN"] = token
+        environment["BACOFFEE_HANDOFF_PRESERVE"] = "1" if handoff else "0"
+        environment.pop("BACOFFEE_MANUAL_SETTINGS", None)
+        command = [sys.executable, "-X", "utf8", str(APP_DIR / "BACoffee.py"), "--worker-payload"]
+        if scheduled:
+            command.append("--scheduled")
+        job = _OwnedJob(_task_job_name(token, "payload"))
+        launch_job = _OwnedJob(_task_job_name(token, "launch"), silent_breakaway=True)
+        process = subprocess.Popen(command, cwd=str(APP_DIR), env=environment,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        output_thread = threading.Thread(
+            target=_forward_worker_output, args=(process.stdout,),
+            name="BACoffeePayloadOutput", daemon=True)
+        output_thread.start()
+        job.attach(process)
+        state["payload_ready"] = True
+        _write_owner(state)
+        cancelled = False
+        cancel_deadline = None
+        while process.poll() is None:
+            if scheduled and _manual_pending() and not cancelled:
+                cancelled = True
+                cancel_deadline = time.monotonic() + 8
+                state.update(cancel_requested=True, handoff_preserve=True)
+                _write_owner(state)
+                append_log("[任务互斥] 手动请求已登记，正在取消计划任务并收尾。")
+            if cancelled and time.monotonic() >= cancel_deadline:
+                # Terminate only this job's payload/controllers; VM launch and fenced
+                # delayed helpers explicitly break away. Never kill by process name.
+                job.terminate()
+                process.wait(timeout=5)
+                job.wait_empty()
+                launch_job.terminate()
+                launch_job.wait_empty()
+                append_log("[任务互斥] 计划执行器未及时响应，已停止本轮执行器，保留 MuMu。")
+                break
+            time.sleep(0.05)
+        if scheduled and _manual_pending() and not cancelled:
+            cancelled = True
+            state.update(cancel_requested=True, handoff_preserve=True)
+            _write_owner(state)
+        if cancelled:
+            launch_job.terminate()
+            launch_job.wait_empty()
+            result = {}
+            try:
+                result = json.loads(RESULT_FILE.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+            if result.get("worker_token") != token:
+                result = {"worker_token": token, "scheduled": True, "stages": {}}
+            _stop_owned_ocr(result)
+            invalidate_hibernate_request("manual_takeover")
+            result.update(state="interrupted", success=False, message="被手动任务接管",
+                          will_hibernate=False, finished=datetime.now().isoformat(timespec="seconds"))
+            RESULT_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            append_log("[task] task finished; state=interrupted; reason=被手动任务接管；本轮收尾完成，释放执行权。")
+            return 0
+        return process.returncode
+    except (OSError, TimeoutError) as exc:
+        append_log(f"[任务互斥] 执行权或启动控制进程无法安全收束：{exc}；本次未放行并行执行。")
+        return 75
+    finally:
+        try:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            if job is not None:
+                job.terminate()
+                job.wait_empty()
+                job.close()
+            if launch_job is not None:
+                launch_job.terminate()
+                launch_job.wait_empty()
+                launch_job.close()
+            if owned:
+                current = _owner_state()
+                if current.get("token") == token:
+                    current["finished"] = True
+                    if process is not None:
+                        current["exit_code"] = process.returncode
+                    _write_owner(current)
+            if barrier is not None:
+                barrier.close()
+            execution.close()
+            if manual is not None:
+                manual.close()
+        finally:
+            if output_thread is not None:
+                output_thread.join(timeout=2)
+            elif process is not None and process.stdout is not None:
+                process.stdout.close()
+
+
+def install_baas_operation_info_filter(logger_class) -> None:
+    """Suppress successful action coordinates at BAAS's actual INFO source."""
+    original = logger_class.info
+    if getattr(original, "_bacoffee_operation_filter", False):
+        return
+    number = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
+    point = rf"\(\s*{number}\s*,\s*{number}\s*\)"
+    operation = re.compile(
+        rf"(?:Click(?: \d+ times)? @ {point}|swipe from {point} --> {point})")
+
+    def info(self, message):
+        if isinstance(message, str) and operation.fullmatch(message):
+            return None
+        return original(self, message)
+
+    info._bacoffee_operation_filter = True
+    logger_class.info = info
+
+
+def worker_payload(scheduled: bool) -> int:
+    barrier = _NamedMutex("payload")
+    try:
+        if not barrier.acquire(5):
+            return 75
+        return _worker_payload_owned(scheduled)
+    finally:
+        barrier.close()
+
+
+def _worker_payload_owned(scheduled: bool) -> int:
+    global _WORKER_TOKEN
+    _WORKER_TOKEN = os.environ.get("BACOFFEE_WORKER_TOKEN", "")
+    state = _owner_state()
+    ready_deadline = time.monotonic() + 5
+    while state.get("token") == _WORKER_TOKEN and not state.get("payload_ready"):
+        if time.monotonic() >= ready_deadline:
+            return 75
+        worker_sleep(0.01)
+        state = _owner_state()
+    if not _WORKER_TOKEN or state.get("token") != _WORKER_TOKEN or state.get("finished"):
+        append_log("[任务互斥] 拒绝无执行权的任务执行器。")
+        return 75
+    # If the supervisor crashed, do not continue with an unowned device session.
+    supervisor = ctypes.WinDLL("kernel32", use_last_error=True)
+    supervisor.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
+    supervisor.OpenProcess.restype = ctypes.c_void_p
+    parent_handle = supervisor.OpenProcess(0x00100000, False, int(state["pid"]))
+    if not parent_handle:
+        return 75
+    supervisor.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    supervisor.CloseHandle.argtypes = [ctypes.c_void_p]
+    def monitor():
+        while not _WORKER_MONITOR_STOP.wait(0.1):
+            if supervisor.WaitForSingleObject(parent_handle, 0) == 0:
+                # Exit all payload control threads if the execution owner disappeared.
+                os._exit(75)
+            current = _owner_state()
+            if current.get("token") != _WORKER_TOKEN or current.get("cancel_requested"):
+                _WORKER_CANCELLED.set()
+                if _WORKER_BAAS is not None:
+                    _WORKER_BAAS.signal_stop()
+    watcher = threading.Thread(target=monitor, name="BACoffeeHandoff", daemon=True)
+    watcher.start()
+    try:
+        return _run_worker_owned(scheduled)
+    except WorkerCancelled:
+        append_log("[任务互斥] 计划任务已停止自动动作，等待交接收尾。")
+        return 0
+    finally:
+        _WORKER_MONITOR_STOP.set()
+        watcher.join(timeout=1)
+        supervisor.CloseHandle(parent_handle)
+
+
+def _helper_current() -> bool:
+    """Called inside the helper execution fence, including between cleanup steps."""
+    token = os.environ.get("BACOFFEE_WORKER_TOKEN", "")
+    state = _owner_state()
+    if token and (state.get("token") != token or state.get("cancel_requested")):
+        return False
+    if _manual_pending():
+        if token and state.get("token") == token:
+            state["handoff_preserve"] = True
+            _write_owner(state)
+        return False
+    return True
+
+
+def _helper_wait(seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not _helper_current():
+            return False
+        worker_sleep(min(0.1, max(0, deadline - time.monotonic())))
+    return _helper_current()
+
+
+class _HelperAction:
+    """Fence delayed cleanup/sleep against the execution owner and manual intent."""
+    def __init__(self):
+        self.token = os.environ.get("BACOFFEE_WORKER_TOKEN", "")
+        self.mutex = None
+        self.allowed = False
+
+    def __enter__(self):
+        self.mutex = _NamedMutex("execution")
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline:
+            state = _owner_state()
+            if (self.token and (state.get("token") != self.token or state.get("cancel_requested"))) or _manual_pending():
+                return False
+            if self.mutex.acquire(0.1):
+                state = _owner_state()
+                self.allowed = not _manual_pending() and (not self.token or (
+                    state.get("token") == self.token and not state.get("cancel_requested")))
+                return self.allowed
+        return False
+
+    def __exit__(self, *_):
+        if self.mutex is not None:
+            self.mutex.close()
 
 
 def find_mumu_manager(settings: dict | None = None) -> Path | None:
@@ -850,6 +1575,138 @@ def _read_capture_file(handle, limit: int = 8192) -> bytes:
         return b""
 
 
+def _task_job_name(token: str, kind: str) -> str:
+    scope = os.path.normcase(os.path.abspath(str(DATA_DIR)))
+    identity = hashlib.sha256((scope + ":" + str(token)).encode("utf-8")).hexdigest()
+    return f"Local\\BACoffee.{kind}.{identity}"
+
+
+def _drain_previous_jobs(token: str) -> None:
+    if not token:
+        return
+    # Drain the payload first: it must no longer be able to create a launch.
+    # Reopening the named jobs also covers an abruptly exited supervisor.
+    for kind in ("payload", "launch"):
+        job = _OwnedJob(_task_job_name(token, kind), silent_breakaway=(kind == "launch"))
+        try:
+            job.terminate()
+            job.wait_empty()
+        finally:
+            job.close()
+
+
+class _LaunchManagerProcess:
+    """Create the manager atomically in its task's separately supervised job.
+
+    Child instance processes are not in this job. There is no untracked interval
+    between starting the manager and assigning its process handle to the job.
+    """
+    def __init__(self, command, stdout, stderr, flags):
+        from ctypes import wintypes
+        import msvcrt
+        class Startup(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("reserved", wintypes.LPWSTR),
+                        ("desktop", wintypes.LPWSTR), ("title", wintypes.LPWSTR),
+                        *[(n, wintypes.DWORD) for n in ("x", "y", "cx", "cy", "cols", "rows", "fill", "flags")],
+                        ("show", wintypes.WORD), ("reserved_size", wintypes.WORD),
+                        ("reserved_bytes", ctypes.c_void_p), ("stdin", wintypes.HANDLE),
+                        ("stdout", wintypes.HANDLE), ("stderr", wintypes.HANDLE)]
+        class StartupEx(ctypes.Structure):
+            _fields_ = [("startup", Startup), ("attributes", ctypes.c_void_p)]
+        class ProcessInfo(ctypes.Structure):
+            _fields_ = [("process", wintypes.HANDLE), ("thread", wintypes.HANDLE),
+                        ("pid", wintypes.DWORD), ("tid", wintypes.DWORD)]
+        self.args = command
+        self.returncode = None
+        self.handle = None
+        self.job = _OwnedJob(_task_job_name(_WORKER_TOKEN, "launch"), silent_breakaway=True)
+        self.kernel = self.job.kernel
+        self.kernel.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t)]
+        self.kernel.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
+        self.kernel.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+        self.kernel.CreateProcessW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(StartupEx), ctypes.POINTER(ProcessInfo)]
+        self.kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self.kernel.WaitForSingleObject.restype = wintypes.DWORD
+        self.kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        self.kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        attributes_ready = False
+        null_input = None
+        inherited = []
+        try:
+            size = ctypes.c_size_t()
+            self.kernel.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
+            storage = ctypes.create_string_buffer(size.value)
+            if not self.kernel.InitializeProcThreadAttributeList(storage, 2, 0, ctypes.byref(size)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            attributes_ready = True
+            null_input = open(os.devnull, "rb")
+            handles = [msvcrt.get_osfhandle(f.fileno()) for f in (null_input, stdout, stderr)]
+            for handle in handles:
+                inherited.append((handle, os.get_handle_inheritable(handle)))
+                os.set_handle_inheritable(handle, True)
+            handle_list = (wintypes.HANDLE * 3)(*handles)
+            jobs = (wintypes.HANDLE * 1)(self.job.handle)
+            for key, value in ((0x00020002, handle_list), (0x0002000D, jobs)):
+                if not self.kernel.UpdateProcThreadAttribute(storage, 0, key, value, ctypes.sizeof(value), None, None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            startup = StartupEx()
+            startup.startup.cb = ctypes.sizeof(StartupEx)
+            startup.startup.flags = 0x100  # STARTF_USESTDHANDLES
+            startup.startup.stdin, startup.startup.stdout, startup.startup.stderr = handles
+            startup.attributes = ctypes.cast(storage, ctypes.c_void_p)
+            info = ProcessInfo()
+            command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+            creation = flags | 0x00080000 | 0x01000000  # EXTENDED_STARTUPINFO_PRESENT | BREAKAWAY
+            if not self.kernel.CreateProcessW(command[0], command_line, None, None, True,
+                                               creation, None, None, ctypes.byref(startup), ctypes.byref(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.handle, self.pid = info.process, info.pid
+            self.kernel.CloseHandle(info.thread)
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            for handle, previous in inherited:
+                os.set_handle_inheritable(handle, previous)
+            if null_input is not None:
+                null_input.close()
+            if attributes_ready:
+                self.kernel.DeleteProcThreadAttributeList(storage)
+
+    def poll(self):
+        if self.returncode is None and self.handle and self.kernel.WaitForSingleObject(self.handle, 0) == 0:
+            code = ctypes.c_uint32()
+            if not self.kernel.GetExitCodeProcess(self.handle, ctypes.byref(code)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.returncode = code.value
+        return self.returncode
+
+    def wait(self, timeout=None):
+        delay = 0xFFFFFFFF if timeout is None else max(0, int(timeout * 1000))
+        result = self.kernel.WaitForSingleObject(self.handle, delay)
+        if result == 0x102:
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        if result != 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return self.poll()
+
+    def kill(self):
+        # Manager identity is the original process handle, never a name/PID scan.
+        if self.poll() is None and not self.kernel.TerminateProcess(self.handle, 1):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self):
+        if self.handle:
+            if self.poll() is None:
+                self.kill()
+                self.wait(3)
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+        if self.job is not None:
+            self.job.close()
+            self.job = None
+
+
 def _run_mumu_manager_command(manager: Path, arguments: list[str], timeout: float) -> dict:
     """Run one MuMu command with bounded process and pipe handling."""
     sanitize_external_runtime()
@@ -884,21 +1741,32 @@ def _run_mumu_manager_command(manager: Path, arguments: list[str], timeout: floa
         capture_paths.extend((stdout_path, stderr_path))
         stdout_file = os.fdopen(stdout_fd, "w+b")
         stderr_file = os.fdopen(stderr_fd, "w+b")
-        process = subprocess.Popen(
-            command,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            creationflags=flags,
-        )
+        tracked_launch = bool(_WORKER_TOKEN and "launch" in arguments and arguments[0] == "control")
+        if tracked_launch:
+            worker_checkpoint()
+            process = _LaunchManagerProcess(command, stdout_file, stderr_file, flags)
+        else:
+            process = subprocess.Popen(
+                command, stdout=stdout_file, stderr=stderr_file, creationflags=flags)
+
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            cleanup = _terminate_mumu_process_tree(process)
+            if isinstance(process, _LaunchManagerProcess):
+                process.kill()
+                process.wait(3)
+                cleanup.update(attempted=True, succeeded=True, process_exited=True)
+            else:
+                cleanup = _terminate_mumu_process_tree(process)
     except Exception as exc:
         exception = repr(exc)
         if process is not None:
-            _terminate_mumu_process_tree(process)
+            if isinstance(process, _LaunchManagerProcess):
+                process.kill()
+                process.wait(3)
+            else:
+                _terminate_mumu_process_tree(process)
     stdout = _read_capture_file(stdout_file)
     stderr = _read_capture_file(stderr_file)
     for handle in (stdout_file, stderr_file):
@@ -920,9 +1788,11 @@ def _run_mumu_manager_command(manager: Path, arguments: list[str], timeout: floa
                 remaining = capture_cleanup_deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                time.sleep(min(0.05, remaining))
+                worker_sleep(min(0.05, remaining))
         if path_cleanup_exception and Path(capture_path).exists():
             capture_cleanup_exception = capture_cleanup_exception or path_cleanup_exception
+    if isinstance(process, _LaunchManagerProcess):
+        process.close()
     cleanup_succeeded = cleanup.get("succeeded")
     if capture_cleanup_exception:
         cleanup_succeeded = False
@@ -966,16 +1836,17 @@ def _decode_mumu_json(output: str) -> dict | None:
 
 
 def _mumu_payload_error_code(payload: dict | None):
-    if not payload or payload.get("errcode") is None:
+    if not payload:
         return 0
+    value = payload.get("errcode", payload.get("error_code", 0))
     try:
-        return int(payload["errcode"])
+        return int(value)
     except (TypeError, ValueError):
         return None
 
 
 def _mumu_payload_adb_port(payload: dict | None) -> tuple[str, int] | None:
-    if not payload or _mumu_payload_error_code(payload) not in (0, None):
+    if not payload or _mumu_payload_error_code(payload) != 0:
         return None
     raw_port = payload.get("adb_port", payload.get("adbPort"))
     try:
@@ -1039,7 +1910,7 @@ def query_mumu_adb_port(manager: Path, vm_index: int) -> dict:
         "info": info,
     }
     info_error = _mumu_payload_error_code(info_payload)
-    if info.get("timed_out") or info.get("exception") or info.get("exit_code") not in (0, None) or info_error not in (0, None):
+    if not info_payload or info.get("timed_out") or info.get("exception") or info.get("exit_code") != 0 or info_error != 0:
         reason = (
             info_payload.get("errmsg") if info_payload else None
         ) or info.get("exception") or info.get("stderr") or "无法确认实例是否存在"
@@ -1052,7 +1923,7 @@ def query_mumu_adb_port(manager: Path, vm_index: int) -> dict:
     adb_payload = _decode_mumu_json(adb.get("stdout", ""))
     diagnostic["adb"] = adb
     adb_port = _mumu_payload_adb_port(adb_payload)
-    if adb_port is not None:
+    if adb_port is not None and not adb.get("timed_out") and not adb.get("exception") and adb.get("exit_code") == 0:
         host, port = adb_port
         diagnostic["reason"] = "管理器返回了 ADB 地址；仍需真实 ADB 连通性验证"
         append_log(
@@ -1120,107 +1991,88 @@ def mumu_adb_is_ready(settings: dict, port: int) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def launch_selected_mumu(
-    settings: dict,
-    timeout: int = 180,
-    port_result: dict | None = None,
-) -> bool:
-    """Launch MuMu and only succeed after the selected ADB endpoint is verified."""
+def _selected_mumu_state(manager: Path, vm_index: int) -> dict:
+    info = _run_mumu_manager_command(manager, ["info", "--vmindex", str(vm_index)], MUMU_INFO_QUERY_TIMEOUT_SECONDS)
+    payload = _decode_mumu_json(info.get("stdout", ""))
+    if (info.get("timed_out") or info.get("exception") or info.get("exit_code") != 0
+            or not isinstance(payload, dict) or not payload):
+        raise RuntimeError(f"无法确认实例 {vm_index} 状态：{info}")
+    error = payload.get("error_code", payload.get("errcode", 0))
+    if str(error) != "0" or ("index" in payload and str(payload["index"]) != str(vm_index)):
+        raise RuntimeError(f"实例 {vm_index} 状态查询错误：{payload}")
+    process_started = payload.get("is_process_started")
+    android_started = payload.get("is_android_started")
+    if type(process_started) is not bool or type(android_started) is not bool:
+        raise RuntimeError(f"实例 {vm_index} 状态字段无效：{payload}")
+    if not process_started and android_started:
+        raise RuntimeError(f"实例 {vm_index} 启动状态矛盾：{payload}")
+    return {"running": process_started, "android_started": android_started, "info": info}
+
+
+def launch_selected_mumu(settings: dict, timeout: int = 180, port_result: dict | None = None, query_callback=None) -> bool:
+    """Discover an endpoint only after the selected instance is started."""
     manager = find_mumu_manager(settings)
     if manager is None:
         raise FileNotFoundError("找不到 MuMuManager.exe，请在设置中选择模拟器位置。")
     vm_index = max(0, int(settings.get("mumu_vm_index", 1)))
-    if port_result is None:
-        port_result = query_mumu_adb_port(manager, vm_index)
-    port = port_result.get("port") if port_result else None
-    if not port:
-        reason = (port_result or {}).get("diagnostic", {}).get("reason", "未知原因")
-        raise RuntimeError(f"无法确认 MuMu 实例 {vm_index} 的 ADB 端口：{reason}")
-    port = int(port)
-    source = str(port_result.get("source", "unknown"))
-    append_log(
-        f"[MuMu] 管理器：{manager}；实例索引：{vm_index}；"
-        f"ADB：{port_result.get('host', '127.0.0.1')}:{port}；来源={source}；"
-        f"已验证={'是' if port_result.get('verified') else '否'}。")
-    initially_ready, initial_detail = mumu_adb_is_ready(settings, port)
-    if initially_ready:
-        port_result.update({"port": port, "source": "verified_adb", "verified": True})
-        port_result.setdefault("diagnostic", {})["verification"] = initial_detail
-    if not initially_ready:
-        if source == "formula":
-            append_log(
-                f"[MuMu] 候选端口 {port} 尚未验证（{initial_detail}），"
-                "先启动实例，启动后重新查询并验证。")
-        command = [str(manager), "control", "--vmindex", str(vm_index)]
+    port_result = port_result if port_result is not None else {}
+    worker_checkpoint()
+    state = _selected_mumu_state(manager, vm_index)
+    if not state["running"]:
+        append_log(f"[MuMu] 实例 {vm_index} 未启动，正在启动。")
+        command = ["control", "--vmindex", str(vm_index)]
         version = str(settings.get("mumu_android_version", "")).strip()
         if version in {"12", "15"}:
             command += ["--version", version]
         command.append("launch")
-        launch_result = _run_mumu_manager_command(
-            manager,
-            command[1:],
-            MUMU_LAUNCH_COMMAND_TIMEOUT_SECONDS,
-        )
-        if launch_result.get("timed_out") or launch_result.get("exception") or launch_result.get("exit_code") not in (0, None):
-            detail = (
-                launch_result.get("exception")
-                or launch_result.get("stderr")
-                or launch_result.get("stdout")
-                or f"退出码 {launch_result.get('exit_code')}"
-            )
-            append_log(
-                f"[MuMu] 启动实例 {vm_index} 失败：{detail}；"
-                f"耗时 {launch_result['elapsed_seconds']:.3f} 秒。")
-            port_result.setdefault("diagnostic", {})["launch"] = launch_result
-            return False
-        wait_seconds = max(0, int(settings.get("mumu_start_wait_seconds", 60)))
-        append_log(
-            f"[MuMu] 已发送 Android {version or '自动'} 实例启动命令；"
-            f"先等待 {wait_seconds} 秒，再检测 ADB。")
-        if wait_seconds:
-            time.sleep(wait_seconds)
-        refreshed = query_mumu_adb_port(manager, vm_index)
-        if refreshed.get("port"):
-            refreshed_port = int(refreshed["port"])
-            if refreshed.get("source") == "manager_adb" or source == "formula":
-                if refreshed_port != port:
-                    append_log(
-                        f"[MuMu] 启动后管理器返回端口变化：{port} -> {refreshed_port}；"
-                        "以后续端口为准。")
-                port_result.clear()
-                port_result.update(refreshed)
-                port = refreshed_port
-            else:
-                append_log(
-                    f"[MuMu] 启动后仅得到未验证候选端口 {refreshed_port}，"
-                    f"保留先前管理器端口 {port}。")
-        else:
-            append_log(
-                f"[MuMu] 启动后仍未获得新的管理器端口，继续验证候选端口 {port}；"
-                "若验证失败则不会启动 BAAS。")
+        launched = _run_mumu_manager_command(manager, command, MUMU_LAUNCH_COMMAND_TIMEOUT_SECONDS)
+        payload = _decode_mumu_json(launched.get("stdout", ""))
+        if (launched.get("timed_out") or launched.get("exception") or launched.get("exit_code") != 0
+                or (payload and _mumu_payload_error_code(payload) not in (0,))):
+            raise RuntimeError(f"启动 MuMu 实例 {vm_index} 失败：{launched}")
+        wait_seconds = max(0, int(settings.get("mumu_start_wait_seconds", DEFAULT_SETTINGS["mumu_start_wait_seconds"])))
+        append_log(f"[MuMu] 实例 {vm_index} 已发送启动命令，等待 {wait_seconds} 秒后查询真实地址。")
+        worker_sleep(wait_seconds)
+    else:
+        append_log(f"[MuMu] 实例 {vm_index} 已运行，直接查询真实地址。")
     deadline = time.monotonic() + timeout
     ready_count = 0
-    last_detail = "尚未检测"
+    last_detail = "尚未查询"
+    last_log_detail = None
     next_log = 0.0
+    next_query = 0.0
+    current = {}
     while time.monotonic() < deadline:
-        ready, detail = mumu_adb_is_ready(settings, port)
+        worker_checkpoint()
+        if not current or time.monotonic() >= next_query:
+            query = lambda: query_mumu_adb_port(manager, vm_index)
+            refreshed = query_callback(query) if query_callback is not None else query()
+            next_query = time.monotonic() + 5
+            if not refreshed.get("port"):
+                raise RuntimeError(f"无法查询实例 {vm_index} 地址：{refreshed.get('diagnostic')}")
+            # Preserve a previously returned manager address over a later formula.
+            if not current or refreshed.get("source") == "manager_adb" or current.get("source") == "formula":
+                if current.get("port") != refreshed.get("port"):
+                    ready_count = 0
+                current = refreshed
+        ready, detail = mumu_adb_is_ready(settings, int(current["port"]))
+        worker_checkpoint()
         last_detail = detail
-        if ready:
-            ready_count += 1
-            if ready_count >= 2:
-                port_result.update({"port": port, "source": "verified_adb", "verified": True})
-                port_result.setdefault("diagnostic", {})["verification"] = detail
-                append_log(
-                    f"[MuMu] 实例已完全就绪：127.0.0.1:{port}"
-                    "（ADB、系统启动、截图均正常）。")
-                return True
-        else:
-            ready_count = 0
-        if time.monotonic() >= next_log:
-            append_log(f"[MuMu] 等待实例完全就绪：{detail}")
+        ready_count = ready_count + 1 if ready else 0
+        if ready_count >= 2:
+            current["verified"] = True
+            current["discovery_source"] = current["source"]
+            current.setdefault("diagnostic", {})["verification"] = detail
+            port_result.clear()
+            port_result.update(current)
+            append_log(f"[MuMu] 实例 {vm_index} 已就绪：{current['host']}:{current['port']}；来源={current['source']}；ADB／启动／截图通过。")
+            return True
+        if detail != last_log_detail or time.monotonic() >= next_log:
+            append_log(f"[MuMu] 等待实例 {vm_index} 就绪：{detail}")
+            last_log_detail = detail
             next_log = time.monotonic() + 15
-        time.sleep(2)
-    append_log(f"[MuMu] 等待实例超时：127.0.0.1:{port}；最后状态：{last_detail}。")
+        worker_sleep(2)
+    append_log(f"[MuMu] 实例 {vm_index} 就绪超时：{last_detail}")
     return False
 
 
@@ -1290,11 +2142,9 @@ def _invitation_screen_contract(self) -> dict:
         "control_backend": control_backend,
         "logical_size": [1280, 720],
     }
-    append_log(
-        "[邀请契约] "
-        f"screenshot={width}x{height}; ratio={contract['ratio']}; "
-        f"screenshot_backend={screenshot_backend}; control_backend={control_backend}; "
-        "logical=1280x720")
+    if getattr(self, "bacoffee_last_screen_contract", contract) != contract:
+        append_log(f"[邀请契约] 画面契约变化：{contract}")
+    self.bacoffee_last_screen_contract = contract
     return contract
 
 
@@ -1311,10 +2161,12 @@ def _detect_known_baas_screen(self, candidates: tuple[str, ...]) -> str:
     return "unknown"
 
 
-def _bash_template_match(image, template, template_scale: float = 1.0) -> tuple[float, tuple[int, int], tuple[int, int]]:
+def _bash_template_match(image, template, template_scale: float = 1.0, strict: bool = False) -> tuple[float, tuple[int, int], tuple[int, int]]:
     """Match a BASH PNG, preserving its alpha mask when present."""
     cv2 = importlib.import_module("cv2")
-    if image is None or template is None or image.size == 0:
+    if image is None or template is None or image.size == 0 or template.size == 0:
+        if strict:
+            raise ValueError("模板匹配输入不可用")
         return 0.0, (0, 0), (0, 0)
     image_rgb = image[:, :, :3] if image.ndim == 3 and image.shape[2] == 4 else image
     template_rgb = template[:, :, :3] if template.ndim == 3 and template.shape[2] == 4 else template
@@ -1326,6 +2178,8 @@ def _bash_template_match(image, template, template_scale: float = 1.0) -> tuple[
     if template_rgb.shape[0] > image_rgb.shape[0] or template_rgb.shape[1] > image_rgb.shape[1]:
         factor = min(image_rgb.shape[0] / template_rgb.shape[0], image_rgb.shape[1] / template_rgb.shape[1]) * 0.9
         if factor < 0.3:
+            if strict:
+                raise ValueError("模板与画面比例不可用")
             return 0.0, (0, 0), (0, 0)
         size = (max(1, int(template_rgb.shape[1] * factor)), max(1, int(template_rgb.shape[0] * factor)))
         template_rgb = cv2.resize(template_rgb, size, interpolation=cv2.INTER_LINEAR)
@@ -1339,6 +2193,8 @@ def _bash_template_match(image, template, template_scale: float = 1.0) -> tuple[
         _, maximum, _, location = cv2.minMaxLoc(result)
         return float(maximum), location, (template_rgb.shape[1], template_rgb.shape[0])
     except Exception:
+        if strict:
+            raise
         return 0.0, (0, 0), (0, 0)
 
 
@@ -1355,7 +2211,7 @@ def _bash_invitation_ticket_available(self) -> tuple[bool, object]:
     if score >= 0.7:
         self.click(recover_x1 + location[0] + matched_size[0] // 2,
                    recover_y1 + location[1] + matched_size[1] // 2)
-        time.sleep(1)
+        worker_sleep(1)
         self.update_screenshot_array()
         frame = self.latest_img_array
         self.logger.info("BASH restored hidden cafe UI before invitation.")
@@ -1377,7 +2233,7 @@ def _bash_invitation_ticket_available(self) -> tuple[bool, object]:
         self.logger.warning("BASH could not determine invitation-ticket state; skip safely.")
         return False, frame
     _bash_tap(self, frame, 1334, 975)
-    time.sleep(5)
+    worker_sleep(5)
     return True, frame
 
 
@@ -1410,10 +2266,8 @@ def _bash_invitation_ticket_state(self) -> dict:
         result["state"] = "cooldown"
     elif available_score >= 0.6:
         result["state"] = "available"
-    append_log(
-        f"[邀请券预判] available_score={available_score:.3f}; "
-        f"cooldown_score={cooldown_score:.3f}; state={result['state']}; "
-        f"frame={width}x{height}")
+    if result["state"] == "unknown":
+        append_log(f"[邀请券预判] 无法可靠识别：available={available_score:.3f}；cooldown={cooldown_score:.3f}；frame={width}x{height}")
     return result
 
 
@@ -1431,9 +2285,6 @@ def _bash_restore_hidden_cafe_ui(self) -> bool:
     recover_roi = frame[recover_y1:recover_y2, recover_x1:recover_x2]
     score, location, matched_size = _bash_template_match(
         recover_roi, recover, template_scale)
-    append_log(
-        f"[邀请入口] hidden cafe UI recover score={score:.3f}; "
-        f"frame={width}x{height}")
     if score < 0.7:
         return False
     center_x = recover_x1 + location[0] + matched_size[0] // 2
@@ -1443,7 +2294,7 @@ def _bash_restore_hidden_cafe_ui(self) -> bool:
         f"[邀请入口] hidden cafe UI matched; pixel=({center_x},{center_y}); "
         f"logical=({logical_x},{logical_y})")
     self.click(logical_x, logical_y, wait_over=True)
-    time.sleep(1)
+    worker_sleep(1)
     self.update_screenshot_array()
     return True
 
@@ -1452,6 +2303,7 @@ def _detect_bash_avatar_matches(
     image_array,
     templates: dict[str, object],
     return_diagnostics: bool = False,
+    allow_exchange_student: bool = False,
 ):
     """Detect BASH avatars with stable crops and alpha-aware template scores."""
     cv2 = importlib.import_module("cv2")
@@ -1507,21 +2359,24 @@ def _detect_bash_avatar_matches(
             "mask": alpha_mask,
         }
 
+    padded_frames = {}
+
+    def crop_at_box(x, y, side):
+        pad = side + 4
+        if side not in padded_frames:
+            padded_frames[side] = cv2.copyMakeBorder(
+                frame, pad, pad, pad, pad, cv2.BORDER_REFLECT_101)
+        padded = padded_frames[side]
+        crop = padded[y + pad:y + pad + side, x + pad:x + pad + side]
+        return cv2.resize(crop, (96, 96), interpolation=cv2.INTER_AREA)
+
     def stable_crop(cx, cy, side, offset_x, offset_y):
         side = max(8, int(side))
         pad = side + 4
-        padded = cv2.copyMakeBorder(
-            frame,
-            pad,
-            pad,
-            pad,
-            pad,
-            cv2.BORDER_REFLECT_101,
-        )
         x = int(round(cx + offset_x + pad - side / 2))
         y = int(round(cy + offset_y + pad - side / 2))
-        crop = padded[y:y + side, x:x + side]
-        return cv2.resize(crop, (96, 96), interpolation=cv2.INTER_AREA)
+        box = (x - pad, y - pad, side)
+        return crop_at_box(*box), box
 
     badge = None
     # This is the BASH portrait marker for a student who is already in either
@@ -1561,10 +2416,14 @@ def _detect_bash_avatar_matches(
                     badge_roi, badge_rgb, cv2.TM_CCOEFF_NORMED).max())
                 if badge_score >= 0.8:
                     detail["badge_score"] = round(badge_score, 4)
-                    detail["reason"] = "already_in_cafe"
-                    continue
+                    if not allow_exchange_student:
+                        detail["reason"] = "already_in_cafe"
+                        continue
+                    detail["already_in_cafe"] = True
         original_scores = {}
         corrected_scores = {}
+        best_boxes = {}
+        initial_boxes = {box for _, box in stable_crops}
         for name, prepared in prepared_templates.items():
             original_score = float(cv2.matchTemplate(
                 original_crop,
@@ -1573,22 +2432,81 @@ def _detect_bash_avatar_matches(
             ).max())
             original_scores[name] = round(original_score, 4)
             corrected_score = -1.0
-            for candidate_crop in stable_crops:
+            for candidate_crop, candidate_box in stable_crops:
                 score = float(cv2.matchTemplate(
                     candidate_crop,
                     prepared["rgb"],
                     cv2.TM_CCOEFF_NORMED,
                     mask=prepared["mask"],
                 ).max())
-                corrected_score = max(corrected_score, score)
+                if score > corrected_score:
+                    corrected_score = score
+                    best_boxes[name] = candidate_box
             corrected_scores[name] = round(corrected_score, 4)
 
-        detail["template_scores_original"] = original_scores
-        detail["template_scores"] = corrected_scores
         ranked = sorted(corrected_scores.items(), key=lambda item: item[1], reverse=True)
         best_name, best_score = ranked[0] if ranked else (None, -1.0)
         second_name, second_score = ranked[1] if len(ranked) > 1 else (None, -1.0)
         margin = best_score - second_score if second_name is not None else 1.0
+        adjustment = None
+        if (best_name is not None and best_name in best_boxes
+                and BASH_CROP_ADJUST_MIN_SCORE <= best_score < BASH_HIGH_CONFIDENCE_SCORE
+                and round(margin, 4) >= BASH_MIN_MARGIN):
+            base_name, base_score = best_name, best_score
+            initial_box = best_boxes[base_name]
+            side = initial_box[2]
+            # Use the unshifted box at the already-selected size as the fixed
+            # origin. An initial +/-1 crop must not become a second origin.
+            x, y, side = next(
+                box for (offset_x, offset_y, _), (_, box) in zip(stable_variants, stable_crops)
+                if offset_x == offset_y == 0 and box[2] == side)
+            initial_offset = (initial_box[0] - x, initial_box[1] - y)
+            offsets = [(-1, 0), (1, 0), (0, -1), (0, 1),
+                       (-2, 0), (2, 0), (0, -2), (0, 2)]
+            near = [(dx, dy) for dx in range(-3, 4) for dy in range(-3, 4)
+                    if 0 < dx * dx + dy * dy <= 9 and (dx, dy) not in offsets]
+            offsets.extend(sorted(near, key=lambda offset: (
+                offset[0] * offset[0] + offset[1] * offset[1], offset[1], offset[0])))
+            reused_offsets = [list(offset) for offset in offsets
+                              if (x + offset[0], y + offset[1], side) in initial_boxes]
+            chosen_offset = initial_offset
+            attempted_offsets = []
+            for dx, dy in offsets:
+                if (x + dx, y + dy, side) in initial_boxes:
+                    continue  # This exact crop was already scored initially.
+                attempted_offsets.append([dx, dy])
+                adjusted_crop = crop_at_box(x + dx, y + dy, side)
+                scores = {
+                    name: round(float(cv2.matchTemplate(
+                        adjusted_crop, prepared["rgb"], cv2.TM_CCOEFF_NORMED,
+                        mask=prepared["mask"]).max()), 4)
+                    for name, prepared in prepared_templates.items()
+                }
+                adjusted_rank = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+                adjusted_name, adjusted_score = adjusted_rank[0]
+                runner_name, runner_score = adjusted_rank[1] if len(adjusted_rank) > 1 else (None, -1.0)
+                adjusted_margin = round(adjusted_score - runner_score, 4) if runner_name is not None else 1.0
+                if (adjusted_name == base_name and adjusted_score > best_score
+                        and adjusted_margin >= BASH_MIN_MARGIN):
+                    corrected_scores = scores
+                    best_score = adjusted_score
+                    second_name, second_score = runner_name, runner_score
+                    margin = adjusted_margin
+                    chosen_offset = (dx, dy)
+                    if best_score >= BASH_HIGH_CONFIDENCE_SCORE:
+                        break
+            adjustment = {
+                "name": base_name, "before_score": base_score,
+                "after_score": best_score, "offset": list(chosen_offset),
+                "base_box": [x, y, side], "positions": len(attempted_offsets),
+                "initial_offset": list(initial_offset),
+                "attempted_offsets": attempted_offsets, "reused_offsets": reused_offsets,
+                "applied": best_score > base_score,
+            }
+            detail["crop_adjustment"] = adjustment
+
+        detail["template_scores_original"] = original_scores
+        detail["template_scores"] = corrected_scores
         detail["best_name"] = best_name
         detail["best_score"] = round(best_score, 4)
         detail["original_best_score"] = (
@@ -1605,6 +2523,8 @@ def _detect_bash_avatar_matches(
             "second_score": detail["second_score"],
             "margin": round(margin, 4),
         }
+        if adjustment is not None:
+            evidence["crop_adjustment"] = adjustment
         diagnostics["candidate_evidence"].append(evidence)
         if (
             best_name is not None
@@ -1613,7 +2533,8 @@ def _detect_bash_avatar_matches(
         ):
             results.append((best_name, int(cx), int(cy), best_score))
             detail["accepted"] = True
-            detail["reason"] = "matched_high_confidence"
+            detail["reason"] = "matched_crop_adjustment" if adjustment and adjustment["applied"] else "matched_high_confidence"
+            detail["acceptance_source"] = "single_frame_crop" if adjustment and adjustment["applied"] else "single_frame"
         elif (
             best_name is not None
             and best_score >= BASH_RECHECK_MIN_SCORE
@@ -1628,55 +2549,25 @@ def _detect_bash_avatar_matches(
     return (results, diagnostics) if return_diagnostics else results
 
 
-def _bash_recheck_borderline_candidates(self, frame, templates, matches, diagnostics):
-    """Recheck borderline circles without scrolling before accepting them."""
-    pending = diagnostics.get("borderline_candidates", [])
-    if not pending:
+def _bash_recheck_borderline_candidates(
+        self, frame, templates, matches, diagnostics, allow_exchange_student: bool = False):
+    """Use one independent rescue frame only when this frame has no passing match."""
+    if matches or not diagnostics.get("borderline_candidates"):
         return matches, diagnostics, frame
+    worker_checkpoint()
     self.update_screenshot_array()
     second_frame = self.latest_img_array
+    from core import image as baas_image
+    if not baas_image.compare_image(self, "cafe_invitation-ticket"):
+        raise CafeInvitationRecoveryRequired("补救取帧时无法确认有效邀请列表")
     second_matches, second_diagnostics = _detect_bash_avatar_matches(
-        second_frame, templates, return_diagnostics=True)
-    second_evidence = second_diagnostics.get("candidate_evidence", [])
-    rechecks = []
-    for first in pending:
-        candidates = []
-        for second in second_evidence:
-            if second.get("name") != first.get("name"):
-                continue
-            first_x, first_y = first["circle"][:2]
-            second_x, second_y = second["circle"][:2]
-            distance = float(((first_x - second_x) ** 2 + (first_y - second_y) ** 2) ** 0.5)
-            if distance <= BASH_RECHECK_CENTER_TOLERANCE:
-                candidates.append((distance, second))
-        candidates.sort(key=lambda item: item[0])
-        accepted = False
-        second = candidates[0][1] if candidates else None
-        distance = candidates[0][0] if candidates else None
-        if second is not None:
-            accepted = (
-                second["score"] >= BASH_RECHECK_MIN_SCORE
-                and second["margin"] >= BASH_MIN_MARGIN)
-            if accepted:
-                matches.append((
-                    second["name"],
-                    second["circle"][0],
-                    second["circle"][1],
-                    second["score"],
-                ))
-        rechecks.append({
-            "name": first.get("name"),
-            "first_score": first.get("score"),
-            "second_score": second.get("score") if second else None,
-            "first_original_score": first.get("original_score"),
-            "first_margin": first.get("margin"),
-            "second_margin": second.get("margin") if second else None,
-            "center_distance": round(distance, 2) if distance is not None else None,
-            "accepted": accepted,
-        })
-    diagnostics["rechecks"] = rechecks
-    diagnostics["recheck_frame_size"] = [int(second_frame.shape[1]), int(second_frame.shape[0])]
-    return matches, diagnostics, second_frame
+        second_frame, templates, return_diagnostics=True,
+        allow_exchange_student=allow_exchange_student)
+    for detail in second_diagnostics.get("circles", []):
+        if detail.get("accepted"):
+            detail["acceptance_source"] = "rescue_frame_crop" if detail.get("crop_adjustment", {}).get("applied") else "rescue_frame"
+    second_diagnostics["rescue_frame"] = True
+    return second_matches, second_diagnostics, second_frame
 
 
 def _summarize_bash_diagnostics(diagnostics: dict, page: int, bottom_diff=None) -> dict:
@@ -1714,6 +2605,7 @@ def _summarize_bash_diagnostics(diagnostics: dict, page: int, bottom_diff=None) 
                 "second_score": detail.get("second_score"),
                 "margin": detail.get("margin"),
                 "circle": detail.get("circle"),
+                "acceptance_source": detail.get("acceptance_source"),
             })
     margin_evidence.sort(key=lambda item: item.get("score") or -1.0, reverse=True)
     summary = {
@@ -1740,7 +2632,48 @@ def _summarize_bash_diagnostics(diagnostics: dict, page: int, bottom_diff=None) 
         summary["detector_reason"] = diagnostics["reason"]
     if diagnostics.get("rechecks"):
         summary["rechecks"] = diagnostics["rechecks"]
+    adjustments = []
+    rechecks = diagnostics.get("rechecks", [])
+    for frame_number, items in (
+        (1, [detail["crop_adjustment"] for detail in diagnostics.get("circles", [])
+             if "crop_adjustment" in detail]),
+        (2, diagnostics.get("recheck_crop_adjustments", [])),
+    ):
+        for item in items:
+            check = next((row for row in rechecks if row.get("name") == item["name"]), None)
+            adjustments.append({
+                "name": item["name"], "frame": frame_number,
+                "before_score": item["before_score"], "after_score": item["after_score"],
+                "offset": item["offset"], "positions": item["positions"],
+                "applied": item["applied"],
+                **{key: item[key] for key in ("base_box", "initial_offset", "attempted_offsets", "reused_offsets") if key in item},
+            })
+    if adjustments:
+        summary["crop_adjustments"] = adjustments
     return summary
+
+
+def _brief_bash_diagnostics(summary: dict) -> dict:
+    """Keep routine pages compact; the original six full pages stay in memory."""
+    brief = {key: summary[key] for key in (
+        "page", "phase", "candidate", "discovery_page", "circle_count",
+        "selected_best_scores", "filtered_reasons", "bottom_diff", "detector_reason") if key in summary}
+    brief.setdefault("phase", "discovery")
+    candidate_names = [row.get("name") for row in summary.get("candidates", []) if row.get("name")]
+    candidate_names.extend(row["name"] for row in summary.get("rechecks", []) if row.get("accepted") and row.get("name"))
+    brief["candidates"] = list(dict.fromkeys(candidate_names))
+    if summary.get("candidates"):
+        brief["accepted"] = [{key: row.get(key) for key in ("name", "score", "acceptance_source")}
+                             for row in summary["candidates"]]
+    applied = [row for row in summary.get("crop_adjustments", []) if row.get("applied")]
+    if applied:
+        brief["crop_adjustments"] = [
+            {key: value for key, value in row.items() if key not in {"attempted_offsets", "reused_offsets"}}
+            for row in applied]
+    if summary.get("rechecks"):
+        brief["rechecks"] = [{key: row.get(key) for key in ("name", "second_score", "accepted")}
+                             for row in summary["rechecks"]]
+    return brief
 
 
 def bash_invite_student(self, cafe_no=1, student_snapshot=None):
@@ -1750,13 +2683,10 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
     from core.exception import FunctionCallTimeout, RequestHumanTakeOver
     from module import cafe_reward
 
+    allow_exchange_student = bool(getattr(self.config, "cafe_reward_allow_exchange_student", False))
+    append_log(f"[邀请选项] No.{cafe_no} 允许邀请换装角色={'开启' if allow_exchange_student else '关闭'}")
     started = time.perf_counter()
     deadline = time.monotonic() + INVITATION_BUDGET_SECONDS
-    discovery_reserve = min(
-        INVITATION_DISCOVERY_RESERVE_SECONDS,
-        max(0.0, INVITATION_BUDGET_SECONDS * 0.25),
-    )
-    discovery_deadline = deadline - discovery_reserve
     self.bacoffee_invitation_deadline = deadline
     if student_snapshot is None:
         student_snapshot = getattr(self, "bacoffee_student_snapshot", None)
@@ -1776,7 +2706,8 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
         "cached_candidates": [],
         "stop_reason": "",
         "rechecks": 0,
-        "reserve_seconds": round(discovery_reserve, 3),
+        "top_swipes": 0,
+        "progress_refreshes": 0,
     }
 
     def relocation_snapshot():
@@ -1788,6 +2719,8 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
         snapshot["remaining_budget_seconds"] = round(
             max(0.0, deadline - time.monotonic()), 3)
         return snapshot
+
+    active_confirmation = None
 
     def finish(
         status: str,
@@ -1804,6 +2737,7 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
         result = {
             "status": status,
             "cafe_no": cafe_no,
+            "cafe_attempt": getattr(self, "bacoffee_cafe_attempt", 1),
             "selected": list(selected or ()),
             "candidate": candidate,
             "score": round(float(score), 4) if score is not None else None,
@@ -1812,6 +2746,12 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
             "known_screen": known_screen,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
         }
+        if active_confirmation is not None and candidate == active_confirmation.get("candidate"):
+            result["confirmation_steps"] = [dict(step) for step in active_confirmation["steps"][-14:]]
+            result["last_confirmation_feature"] = active_confirmation.get("last_feature")
+            result["confirmation_phase"] = active_confirmation.get("phase")
+            result["awaiting_after"] = active_confirmation.get("awaiting_after")
+            result["menu_confirmed"] = bool(active_confirmation.get("menu_confirmed"))
         if screen_contract is not None:
             result["screen_contract"] = screen_contract
         if invalid_templates:
@@ -1824,9 +2764,10 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
             }
         if discovery_stats["pages"] or discovery_stats["stop_reason"]:
             result["discovery"] = dict(discovery_stats)
+            result["discovery"]["elapsed_seconds"] = round(discovery_stats.get("elapsed_seconds", time.perf_counter() - started), 3)
         if relocation_stats["recognition_pages"] or relocation_stats["candidate_attempts"]:
             result["relocation"] = relocation_snapshot()
-        if status in {"timeout", "error", "uncertain", "not_found"} and diagnostic_history:
+        if status in {"timeout", "error", "uncertain", "not_found", "interrupted"} and diagnostic_history:
             result["diagnostic_tail"] = diagnostic_history[-6:]
         run_results = getattr(self, "bacoffee_invitation_results", None)
         if isinstance(run_results, list):
@@ -1834,9 +2775,10 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
         run_result = getattr(self, "bacoffee_run_result", None)
         if isinstance(run_result, dict):
             run_result.setdefault("invitation_results", []).append(result)
-        append_log(
-            "[邀请结果] "
-            + json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        if result.get("diagnostic_tail"):
+            append_log(f"[BASH诊断尾部] No.{cafe_no} attempt={result['cafe_attempt']} "
+                       + json.dumps(result["diagnostic_tail"], ensure_ascii=False, separators=(",", ":")))
+        append_log(f"[邀请结果] No.{cafe_no} attempt={result['cafe_attempt']} 状态={status}；对象={result.get('candidate') or '无'}；原因={result.get('reason', '')}")
         return result
 
     def timeout_result(reason: str, candidate: str | None = None, page: int | None = None):
@@ -1849,9 +2791,73 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
             invalid_templates=invalid_templates)
 
     def budget_expired(reason: str, candidate: str | None = None, page: int | None = None):
+        worker_checkpoint()
+        if not self.flag_run:
+            raise RequestHumanTakeOver("用户中止邀请")
         if time.monotonic() >= deadline:
+            if not discovery_stats["stop_reason"]:
+                discovery_stats["stop_reason"] = "异常保护：无有效进度达到期限"
             return timeout_result(reason, candidate, page)
         return None
+
+    def renew_deadline(progress=False):
+        nonlocal deadline
+        deadline = time.monotonic() + INVITATION_BUDGET_SECONDS
+        self.bacoffee_invitation_deadline = deadline
+        if progress:
+            discovery_stats["progress_refreshes"] += 1
+
+    def read_list_frame():
+        from core import image as baas_image
+        worker_checkpoint()
+        if not self.flag_run:
+            raise RequestHumanTakeOver("用户中止邀请")
+        self.update_screenshot_array()
+        frame = self.latest_img_array
+        if (frame is None or getattr(frame, "ndim", 0) != 3 or not frame.size
+                or not baas_image.compare_image(self, "cafe_invitation-ticket")):
+            raise CafeInvitationRecoveryRequired("搜索或重定位时无法确认有效邀请列表")
+        return frame
+
+    def list_roi(frame):
+        height, width = frame.shape[:2]
+        return cv2.cvtColor(
+            frame[int(280 * height / 1080):int(906 * height / 1080),
+                  int(599 * width / 1920):int(1321 * width / 1920)], cv2.COLOR_BGR2GRAY)
+
+    def roi_diff(first, second):
+        return float(np.mean(np.abs(first.astype(np.int16) - second.astype(np.int16))))
+
+    verified_top_roi = None
+
+    def ensure_list_top():
+        nonlocal verified_top_roi
+        # Entry/reopening does not guarantee a reset scroll position. Probe only
+        # this valid list. Bound initial normalization separately; after discovery
+        # its measured page count bounds the return trip, with progress renewal.
+        swipe_limit = discovery_stats["pages"] + 2 if discovery_stats["pages"] else 512
+        top_swipes = 0
+        frame = read_list_frame()
+        previous = list_roi(frame)
+        if verified_top_roi is not None and roi_diff(previous, verified_top_roi) < 3.0:
+            return frame  # Already at the top verified during this invitation.
+        stable = 0
+        while stable < 2:
+            if time.monotonic() >= deadline or top_swipes >= swipe_limit:
+                raise FunctionCallTimeout("邀请列表归顶无进度超时或达到异常滑动保护上限")
+            self.swipe(640, 213, 640, 520, duration=0.4, post_sleep_time=1)
+            discovery_stats["top_swipes"] += 1
+            top_swipes += 1
+            frame = read_list_frame()
+            current = list_roi(frame)
+            if roi_diff(current, previous) < 3.0:
+                stable += 1
+            else:
+                stable = 0
+                renew_deadline(progress=True)
+            previous = current
+        verified_top_roi = previous.copy()
+        return frame
 
     if selected is None:
         return finish("error", reason="worker 未提供固定学生选择快照")
@@ -1874,8 +2880,6 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
         template = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
         if template is not None and template.size and template.ndim == 3 and template.shape[2] == 4:
             templates[name] = template
-            append_log(
-                f"[邀请模板] No.{cafe_no} 加载：{entry['name']}；source={entry['source']}；path={path}")
         else:
             invalid_templates.append(name)
             append_log(f"[邀请模板] No.{cafe_no} PNG 无法解码或不是 RGBA：{name}")
@@ -1888,14 +2892,6 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
             invalid_templates=invalid_templates)
 
     self.logger.info("BASH 2026-09-05 avatar priority: " + ", ".join(Path(x).stem for x in chosen))
-    append_log(
-        f"[邀请快照] No.{cafe_no} 固定 PNG 顺序：{list(chosen)}；"
-        f"budget={INVITATION_BUDGET_SECONDS:.0f}s；"
-        f"discovery_reserve={discovery_reserve:.0f}s；"
-        f"page_limit={INVITATION_DISCOVERY_PAGE_LIMIT}；"
-        f"score_high={BASH_HIGH_CONFIDENCE_SCORE:.2f}；"
-        f"score_recheck={BASH_RECHECK_MIN_SCORE:.2f}；"
-        f"margin_min={BASH_MIN_MARGIN:.2f}")
     if invalid_templates:
         append_log(f"[邀请模板] No.{cafe_no} 无效 PNG：{invalid_templates}")
     if budget_expired("进入邀请页前已达到单店邀请预算"):
@@ -1976,6 +2972,7 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
     previous_roi = None
 
     def confirm_candidate(frame, cx, cy, name, score, page):
+        nonlocal active_confirmation
         timeout = budget_expired(
             "确认候选前已达到单店邀请预算", candidate=name, page=page)
         if timeout:
@@ -1989,19 +2986,48 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
             f"page={page}; pixel=({cx},{cy}); logical=({logical_x},{logical_y}); "
             f"expected_baas_pixel={expected_pixel}")
         self.logger.info(f"Invite BASH target {Path(name).stem} ({score:.3f}) via BAAS y={logical_y}")
+        def persist_step(step):
+            try:
+                append_log(f"[邀请确认] No.{cafe_no} attempt={getattr(self, 'bacoffee_cafe_attempt', 1)} candidate={name}; "
+                           + json.dumps(step, ensure_ascii=False, separators=(",", ":")))
+            except (WorkerCancelled, RequestHumanTakeOver):
+                raise
+            except Exception:
+                pass  # A diagnostic sink must not change the confirmation action.
+
+        confirmation_context = {"cafe_no": cafe_no, "candidate": name, "steps": [],
+                                "phase": "opening_candidate", "on_step": persist_step}
+        active_confirmation = confirmation_context
+
+        def preserve_failure(status, exc):
+            try:
+                persist_step({"event": status, "last_feature": confirmation_context.get("last_feature"),
+                              "phase": confirmation_context.get("phase"), "menu_confirmed": bool(confirmation_context.get("menu_confirmed"))})
+            except Exception:
+                pass
+            try:
+                finish(status, candidate=name, score=score, page=page,
+                       reason=f"确认阶段 {confirmation_context.get('phase')}：{exc}",
+                       known_screen="cafe_menu" if confirmation_context.get("menu_confirmed") else "unknown",
+                       screen_contract=contract, invalid_templates=invalid_templates)
+            except Exception:
+                pass  # Preserve the original cancellation/timeout even if recording fails.
+
         try:
-            accepted = cafe_reward.checkConfirmInvite(self, logical_y)
-        except (FunctionCallTimeout, RequestHumanTakeOver):
+            accepted = cafe_reward.checkConfirmInvite(self, logical_y, bac_candidate=confirmation_context)
+        except (WorkerCancelled, RequestHumanTakeOver) as exc:
+            preserve_failure("interrupted", exc)
+            raise
+        except FunctionCallTimeout as exc:
+            preserve_failure("timeout", exc)
             raise
         except Exception as exc:
-            return finish(
-                "error",
-                candidate=name,
-                score=score,
-                page=page,
-                reason=f"BAAS 确认函数异常：{exc}",
-                screen_contract=contract,
-                invalid_templates=invalid_templates)
+            preserve_failure("uncertain", exc)
+            raise CafeInvitationRecoveryRequired(f"No.{cafe_no} invitation confirmation failed: {exc}") from exc
+        else:
+            persist_step({"event": "end", "status": "accepted" if accepted else "rejected",
+                          "last_feature": confirmation_context.get("last_feature"),
+                          "menu_confirmed": bool(confirmation_context.get("menu_confirmed"))})
 
         if time.monotonic() >= deadline:
             return timeout_result("BAAS 确认后已达到单店邀请预算", name, page)
@@ -2014,7 +3040,7 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
                     candidate=name,
                     score=score,
                     page=page,
-                    reason="BAAS 明确拒绝候选并安全返回邀请列表",
+                    reason="BAAS 确认策略拒绝并安全返回邀请列表：" + str(confirmation_context["steps"][-1].get("reason", "") if confirmation_context["steps"] else "原权限拒绝"),
                     known_screen=known_screen,
                     screen_contract=contract,
                     invalid_templates=invalid_templates)
@@ -2076,74 +3102,77 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
         append_log(f"[邀请入口] No.{cafe_no} 唯一重定位返回：{reopened}")
         return reopened
 
-    def discovery_cutoff(reason: str, page: int | None = None) -> bool:
-        if time.monotonic() < discovery_deadline:
-            return False
-        if not discovery_stats["stop_reason"]:
-            discovery_stats["stop_reason"] = reason
-            append_log(
-                f"[邀请发现] No.{cafe_no} 截止：{reason}; page={page}; "
-                f"cached={discovery_stats['cached_candidates']}; "
-                f"remaining_budget_seconds={max(0.0, deadline - time.monotonic()):.3f}")
-        return True
-
-    for page in range(1, INVITATION_DISCOVERY_PAGE_LIMIT + 1):
-        if not self.flag_run:
-            return finish("cancelled", reason="用户中止咖啡厅任务", screen_contract=contract)
-        if discovery_cutoff("发现阶段截止，保留重定位与确认预算", page):
-            break
-        discovery_stats["pages"] = page
-        self.update_screenshot_array()
-        frame = self.latest_img_array
-        matches, diagnostics = _detect_bash_avatar_matches(
-            frame, templates, return_diagnostics=True)
-        if diagnostics.get("borderline_candidates"):
-            matches, diagnostics, frame = _bash_recheck_borderline_candidates(
-                self, frame, templates, matches, diagnostics)
-            discovery_stats["rechecks"] = discovery_stats.get("rechecks", 0) + len(
-                diagnostics.get("rechecks", []))
-        page_seen = set()
-        for name, cx, cy, score in matches:
-            if name in page_seen:
-                continue
-            page_seen.add(name)
-            self.logger.info(f"BASH invitation page {page}: {Path(name).stem} ({score:.3f})")
-            found.add(name)
-            match_data.setdefault(name, (cx, cy, score, page))
-        discovery_stats["cached_candidates"] = [name for name in chosen if name in found]
-
-        height, width = frame.shape[:2]
-        roi = cv2.cvtColor(
-            frame[int(280 * height / 1080):int(906 * height / 1080),
-                  int(599 * width / 1920):int(1321 * width / 1920)],
-            cv2.COLOR_BGR2GRAY)
-        diff = None if previous_roi is None else float(np.mean(
-            np.abs(roi.astype(np.int16) - previous_roi.astype(np.int16))))
-        summary = _summarize_bash_diagnostics(diagnostics, page, diff)
-        diagnostic_history.append(summary)
-        if len(diagnostic_history) > 6:
-            diagnostic_history.pop(0)
-        append_log(
-            f"[BASH识别] No.{cafe_no} "
-            + json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
-        if discovery_cutoff("发现阶段达到截止，保留重定位与确认预算", page):
-            break
-        if page_seen and chosen[0] in page_seen:
-            discovery_stats["stop_reason"] = "首选学生可靠识别，停止继续扫描"
-            self.logger.info("Highest-priority student reliably found; stop discovery early.")
-            break
-        if diff is not None and diff < 3.0:
-            discovery_stats["stop_reason"] = "识别到底"
-            self.logger.info(f"BASH invitation list reached bottom on page {page} (diff={diff:.2f}).")
-            break
-        previous_roi = roi.copy()
-        if page < INVITATION_DISCOVERY_PAGE_LIMIT:
-            if discovery_cutoff("发现阶段滑动前达到截止，保留重定位与确认预算", page):
+    try:
+        frame = ensure_list_top()
+        renew_deadline()
+        page = 0
+        bottom_cycles = 0
+        matches = []
+        while True:
+            page += 1
+            timeout = budget_expired("搜索无有效进度达到异常保护期限", page=page)
+            if timeout:
+                return timeout
+            discovery_stats["pages"] = page
+            matches, diagnostics = _detect_bash_avatar_matches(
+                frame, templates, return_diagnostics=True,
+                allow_exchange_student=allow_exchange_student)
+            if not matches and diagnostics.get("borderline_candidates"):
+                matches, diagnostics, frame = _bash_recheck_borderline_candidates(
+                    self, frame, templates, matches, diagnostics,
+                    allow_exchange_student=allow_exchange_student)
+                discovery_stats["rechecks"] += 1
+            page_seen = set()
+            for name, cx, cy, score in matches:
+                if name in page_seen:
+                    continue
+                page_seen.add(name)
+                found.add(name)
+                match_data.setdefault(name, (cx, cy, score, page))
+            discovery_stats["cached_candidates"] = [name for name in chosen if name in found]
+            roi = list_roi(frame)
+            diff = None if previous_roi is None else roi_diff(roi, previous_roi)
+            if diff is not None:
+                if diff < 3.0:
+                    bottom_cycles += 1
+                else:
+                    bottom_cycles = 0
+                    renew_deadline(progress=True)
+            summary = _summarize_bash_diagnostics(diagnostics, page, diff)
+            diagnostic_history.append(summary)
+            if len(diagnostic_history) > 6:
+                diagnostic_history.pop(0)
+            append_log(f"[BASH识别] No.{cafe_no} " + json.dumps(
+                _brief_bash_diagnostics(summary), ensure_ascii=False, separators=(",", ":")))
+            timeout = budget_expired("当前页识别后无有效进度达到异常保护期限", page=page)
+            if timeout:
+                return timeout
+            if chosen[0] in page_seen:
+                discovery_stats["stop_reason"] = "首选找到"
                 break
+            if bottom_cycles >= 2:
+                discovery_stats["stop_reason"] = "列表到底：连续两次向下滑动后布局不变"
+                break
+            previous_roi = roi.copy()
             self.swipe(640, 520, 640, 213, duration=0.4, post_sleep_time=1)
-
-    if not discovery_stats["stop_reason"]:
-        discovery_stats["stop_reason"] = "发现页数上限"
+            frame = read_list_frame()
+    except (WorkerCancelled, RequestHumanTakeOver):
+        discovery_stats["stop_reason"] = "取消"
+        finish("interrupted", reason="搜索取消或执行权已交接", screen_contract=contract)
+        raise
+    except FunctionCallTimeout:
+        discovery_stats["stop_reason"] = "异常保护"
+        finish("timeout", reason="邀请列表归顶或搜索异常保护到期", screen_contract=contract)
+        raise
+    except Exception as exc:
+        discovery_stats["stop_reason"] = "异常：列表状态或设备错误"
+        finish("uncertain", reason=str(exc), screen_contract=contract)
+        raise CafeInvitationRecoveryRequired(f"邀请列表搜索异常：{exc}") from exc
+    discovery_stats["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+    append_log(f"[邀请发现] No.{cafe_no} " + json.dumps(discovery_stats, ensure_ascii=False, separators=(",", ":")))
+    # Repositioning and confirmation each start with fresh bounded time. Search
+    # duration is not carried over as an already-expired absolute deadline.
+    renew_deadline()
 
     if not found:
         self.logger.warning("BASH invitation scan reached the bottom without any selected student; stop this invitation attempt.")
@@ -2171,7 +3200,9 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
         f"Best BASH avatar: {Path(target).stem}; first seen on page {target_page}; "
         f"candidates={candidate_order}")
 
-    reopened = close_and_reopen()
+    current_visible = {name: (cx, cy, score) for name, cx, cy, score in matches}
+    use_current_frame = target in current_visible
+    reopened = "cafe_invitation-ticket" if use_current_frame else close_and_reopen()
     if reopened is None:
         return timeout_result("唯一重定位前已达到单店邀请预算", target, target_page)
     if reopened == "cafe_invitation-ticket-invalid":
@@ -2199,7 +3230,26 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
     # The list may overlap between screenshots, so each anchor allows a small
     # local recognition window rather than assuming the candidate is on one
     # exact frame. All movement and recognition remains globally bounded.
-    current_scroll = 0
+    def relocation_action(action, candidate=target, candidate_page=target_page):
+        try:
+            return action()
+        except (WorkerCancelled, RequestHumanTakeOver):
+            finish("interrupted", candidate=candidate, page=candidate_page,
+                   reason="重定位取消或执行权已交接", screen_contract=contract)
+            raise
+        except FunctionCallTimeout as exc:
+            finish("timeout", candidate=candidate, page=candidate_page,
+                   reason=f"重定位异常保护：{exc}", screen_contract=contract)
+            raise
+        except Exception as exc:
+            finish("uncertain", candidate=candidate, page=candidate_page,
+                   reason=f"重定位列表或设备异常：{exc}", screen_contract=contract)
+            raise CafeInvitationRecoveryRequired(f"重定位列表或设备异常：{exc}") from exc
+
+    current_scroll = page - 1 if use_current_frame else 0
+    if not use_current_frame:
+        frame = relocation_action(ensure_list_top)
+        renew_deadline()
     last_rejected = None
     last_missing = None
 
@@ -2211,11 +3261,15 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
                 "候选快速定位时已达到单店邀请预算", candidate, candidate_page)
             if timeout:
                 return timeout
+            anchor_roi = list_roi(read_list_frame())
             direction = 1 if desired_scroll > current_scroll else -1
             if direction > 0:
                 self.swipe(640, 520, 640, 213, duration=0.2, post_sleep_time=0.8)
             else:
                 self.swipe(640, 213, 640, 520, duration=0.2, post_sleep_time=0.8)
+            next_frame = read_list_frame()
+            if roi_diff(list_roi(next_frame), anchor_roi) >= 3.0:
+                renew_deadline(progress=True)
             current_scroll += direction
             relocation_stats["quick_swipes"] += 1
             append_log(
@@ -2270,7 +3324,9 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
             if state_result is not None:
                 return state_result
 
-        timeout = move_to_candidate_anchor(candidate, candidate_page)
+        on_current_frame = use_current_frame and candidate == target
+        timeout = None if on_current_frame else relocation_action(
+            lambda: move_to_candidate_anchor(candidate, candidate_page), candidate, candidate_page)
         if timeout:
             return timeout
 
@@ -2285,14 +3341,17 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
             )
             if timeout:
                 return timeout
-            self.update_screenshot_array()
-            frame = self.latest_img_array
             relocation_stats["recognition_pages"] += 1
-            matches, diagnostics = _detect_bash_avatar_matches(
-                frame, templates, return_diagnostics=True)
-            if diagnostics.get("borderline_candidates"):
-                matches, diagnostics, frame = _bash_recheck_borderline_candidates(
-                    self, frame, templates, matches, diagnostics)
+            if not (on_current_frame and local_page == 1):
+                frame = relocation_action(read_list_frame, candidate, candidate_page)
+                matches, diagnostics = _detect_bash_avatar_matches(
+                    frame, templates, return_diagnostics=True,
+                    allow_exchange_student=allow_exchange_student)
+            if not matches and diagnostics.get("borderline_candidates"):
+                matches, diagnostics, frame = relocation_action(
+                    lambda: _bash_recheck_borderline_candidates(
+                        self, frame, templates, matches, diagnostics,
+                        allow_exchange_student=allow_exchange_student), candidate, candidate_page)
                 relocation_stats["rechecks"] = relocation_stats.get("rechecks", 0) + len(
                     diagnostics.get("rechecks", []))
             visible = {}
@@ -2316,9 +3375,12 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
                 diagnostic_history.pop(0)
             append_log(
                 f"[BASH识别] No.{cafe_no} "
-                + json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
+                + json.dumps(_brief_bash_diagnostics(summary), ensure_ascii=False, separators=(",", ":")))
 
+            if diff is not None and diff >= 3.0:
+                renew_deadline(progress=True)
             if candidate in visible:
+                renew_deadline()
                 candidate_visible = True
                 cx, cy, score = visible[candidate]
                 attempt_entry = {
@@ -2359,9 +3421,9 @@ def bash_invite_student(self, cafe_no=1, student_snapshot=None):
                     return timeout
                 direction = 1 if current_scroll <= max(0, candidate_page - 2) else -1
                 if direction > 0:
-                    self.swipe(640, 520, 640, 213, duration=0.4, post_sleep_time=1)
+                    relocation_action(lambda: self.swipe(640, 520, 640, 213, duration=0.4, post_sleep_time=1), candidate, candidate_page)
                 else:
-                    self.swipe(640, 213, 640, 520, duration=0.4, post_sleep_time=1)
+                    relocation_action(lambda: self.swipe(640, 213, 640, 520, duration=0.4, post_sleep_time=1), candidate, candidate_page)
                 current_scroll += direction
                 relocation_stats["window_swipes"] += 1
 
@@ -2489,6 +3551,8 @@ def update_profile_adb_port(profile: Path, port_result: dict) -> None:
 
 
 def prepare_profile(settings: dict, port_result: dict | None = None) -> Path:
+    if not port_result or not port_result.get("verified"):
+        raise RuntimeError("仅在实例地址验证后准备 BAAS 配置")
     baas_root = Path(settings["baas_root"])
     source = baas_root / "config" / "cn"
     required_templates = ("config.json", "event.json")
@@ -2511,7 +3575,6 @@ def prepare_profile(settings: dict, port_result: dict | None = None) -> Path:
     config = json.loads(config_path.read_text(encoding="utf-8"))
     manager = find_mumu_manager(settings)
     vm_index = max(0, int(settings.get("mumu_vm_index", 1)))
-    port_result = port_result or _mumu_port_result_for_settings(settings)
     adb_port = port_result.get("port")
     if not adb_port:
         reason = port_result.get("diagnostic", {}).get("reason", "未知原因")
@@ -2534,6 +3597,7 @@ def prepare_profile(settings: dict, port_result: dict | None = None) -> Path:
         "cafe_reward_has_no2_cafe": bool(settings["cafe2"]),
         "cafe_reward_collect_hour_reward": bool(settings["collect_reward"]),
         "cafe_reward_use_invitation_ticket": bool(settings["invite_student"]),
+        "cafe_reward_allow_exchange_student": bool(settings.get("invite_allow_exchange_student", False)),
         "cafe_reward_affection_pat_round": int(settings["pat_rounds"]),
         "cafe_reward_invite1_criterion": "name",
         "cafe_reward_invite2_criterion": "name",
@@ -2585,7 +3649,7 @@ class KeepAwake:
 def hold_wake_stabilization(seconds: int) -> None:
     """Keep Windows awake while a scheduled worker settles after wake."""
     with KeepAwake():
-        time.sleep(seconds)
+        worker_sleep(seconds)
 
 
 def sanitize_external_runtime() -> None:
@@ -2702,29 +3766,15 @@ def recent_resume_event(max_age_seconds: int = 600) -> dict | None:
         return None
 
 
-def save_cafe_diagnostic_frame(thread_obj, label: str) -> str | None:
-    try:
-        cv2 = importlib.import_module("cv2")
-        frame = thread_obj.latest_img_array
-        if frame is None:
-            return None
-        path = DATA_DIR / f"cafe_{label}_{datetime.now():%Y%m%d_%H%M%S}.png"
-        encoded, buffer = cv2.imencode(".png", frame)
-        if encoded:
-            buffer.tofile(str(path))
-            append_log(f"[咖啡厅诊断] 已保存异常画面：{path.name}")
-            return str(path)
-    except Exception as exc:
-        append_log("[咖啡厅诊断] 保存异常画面失败：" + str(exc))
-    return None
-
-
 def run_cafe_with_recovery(thread_obj, cafe_reward) -> bool:
     """Run cafe directly with bounded, cafe-only unknown-screen recovery."""
     from core import picture
     from core.exception import FunctionCallTimeout
 
     original_co_detect = picture.co_detect
+    had_attempt = "bacoffee_cafe_attempt" in vars(thread_obj)
+    original_attempt = getattr(thread_obj, "bacoffee_cafe_attempt", None)
+    run_result = getattr(thread_obj, "bacoffee_run_result", None)
 
     def resilient_co_detect(*args, **kwargs):
         requested_timeout = min(int(kwargs.get("time_out", 600)), 120)
@@ -2742,26 +3792,28 @@ def run_cafe_with_recovery(thread_obj, cafe_reward) -> bool:
         return original_co_detect(*args, **kwargs)
 
     for attempt in range(1, 3):
+        thread_obj.bacoffee_cafe_attempt = attempt
         picture.co_detect = resilient_co_detect
         try:
             append_log(f"[咖啡厅恢复] 第 {attempt}/2 次执行；未知画面将尝试点击右上角退出。")
             return bool(cafe_reward.implement(thread_obj))
         except (FunctionCallTimeout, CafeInvitationRecoveryRequired) as exc:
-            label = (
-                f"timeout_attempt{attempt}"
-                if isinstance(exc, FunctionCallTimeout)
-                else f"invitation_recovery_attempt{attempt}")
-            save_cafe_diagnostic_frame(thread_obj, label)
             append_log(f"[咖啡厅恢复] 第 {attempt}/2 次需要恢复：{exc}")
             if attempt >= 2:
                 return False
             picture.co_detect = original_co_detect
+            if isinstance(run_result, dict):
+                run_result["cafe_recovery_count"] = 1
             append_log("[咖啡厅恢复] 正在重启游戏后进行最后一次重试。")
             if not thread_obj.solve("restart"):
                 append_log("[咖啡厅恢复] 游戏重启失败，取消本轮咖啡厅任务。")
                 return False
         finally:
             picture.co_detect = original_co_detect
+            if had_attempt:
+                thread_obj.bacoffee_cafe_attempt = original_attempt
+            elif "bacoffee_cafe_attempt" in vars(thread_obj):
+                del thread_obj.bacoffee_cafe_attempt
             if getattr(thread_obj, "bacoffee_invitation_deadline", None) is not None:
                 thread_obj.bacoffee_invitation_deadline = None
     return False
@@ -2792,7 +3844,7 @@ def collect_power_diagnostics() -> dict:
             compact = " | ".join(line.strip() for line in output.splitlines() if line.strip())
             append_log(
                 f"[power-diag] powercfg {arguments[0]} exit={completed.returncode}; "
-                f"{compact[:1200] or 'no output'}")
+                f"详见 {POWER_DIAGNOSTIC_FILE.name}")
         except Exception as exc:
             diagnostic["commands"][label] = {"exception": repr(exc)}
             append_log(f"[power-diag] powercfg {arguments[0]} exception={exc!r}")
@@ -2833,7 +3885,7 @@ def collect_resume_diagnostics() -> dict:
             compact = " | ".join(line.strip() for line in output.splitlines() if line.strip())
             append_log(
                 f"[wake] {label} captured immediately after resume; exit={completed.returncode}; "
-                f"{compact[:1600] or 'no output'}")
+                f"详见 {RESUME_DIAGNOSTIC_FILE.name}")
         except Exception as exc:
             diagnostic["commands"][label] = {"exception": repr(exc)}
             append_log(f"[wake] {label} capture exception={exc!r}")
@@ -2863,6 +3915,16 @@ def _new_hibernate_request_id() -> str:
 
 
 def _read_hibernate_status() -> dict:
+    mutex = _NamedMutex("power-state")
+    try:
+        if not mutex.acquire(3):
+            return {}
+        return _read_hibernate_status_unlocked()
+    finally:
+        mutex.close()
+
+
+def _read_hibernate_status_unlocked() -> dict:
     try:
         if not HIBERNATE_STATUS_FILE.is_file():
             return {}
@@ -2873,21 +3935,50 @@ def _read_hibernate_status() -> dict:
 
 
 def _write_hibernate_status(status: dict) -> None:
+    mutex = _NamedMutex("power-state")
+    try:
+        if not mutex.acquire(3):
+            raise TimeoutError("休眠状态锁等待超时")
+        _write_hibernate_status_unlocked(status)
+    finally:
+        mutex.close()
+
+
+def _write_hibernate_status_unlocked(status: dict) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     HIBERNATE_STATUS_FILE.write_text(
         json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _update_hibernate_status_if_current(request_id: str, **updates) -> bool:
-    status = _read_hibernate_status()
-    if status.get("request_id") != request_id:
-        return False
-    status.update(updates)
-    _write_hibernate_status(status)
-    return True
+    mutex = _NamedMutex("power-state")
+    try:
+        if not mutex.acquire(3):
+            return False
+        status = _read_hibernate_status_unlocked()
+        if status.get("request_id") != request_id or str(status.get("state", "")).startswith("cancelled"):
+            return False
+        status.update(updates)
+        _write_hibernate_status_unlocked(status)
+        return True
+    finally:
+        mutex.close()
+
+
+
 
 
 def invalidate_hibernate_request(reason: str = "new_worker_started") -> None:
+    mutex = _NamedMutex("power-state")
+    try:
+        if not mutex.acquire(3):
+            raise TimeoutError("无法安全取消旧休眠请求")
+        _invalidate_hibernate_request_unlocked(reason)
+    finally:
+        mutex.close()
+
+
+def _invalidate_hibernate_request_unlocked(reason: str = "new_worker_started") -> None:
     """Invalidate a delayed helper before a new worker can start doing work."""
     status = _read_hibernate_status()
     request_id = status.get("request_id")
@@ -2906,6 +3997,7 @@ def invalidate_hibernate_request(reason: str = "new_worker_started") -> None:
 
 def request_hibernate(delay_seconds: int = 5) -> bool:
     """Dispatch a helper and wait until it owns the wake lock before returning."""
+    worker_checkpoint()
     expected_delay = max(1, delay_seconds)
     request_id = _new_hibernate_request_id()
     _write_hibernate_status({
@@ -2923,6 +4015,7 @@ def request_hibernate(delay_seconds: int = 5) -> bool:
         getattr(subprocess, "CREATE_NO_WINDOW", 0)
         | getattr(subprocess, "DETACHED_PROCESS", 0)
         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | (getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000) if _WORKER_TOKEN else 0)
     )
     for attempt in range(1, 4):
         try:
@@ -2960,7 +4053,7 @@ def request_hibernate(delay_seconds: int = 5) -> bool:
                         f"[power] hibernate helper handoff failed; state={state}; "
                         f"request_id={request_id}.")
                     return False
-                time.sleep(0.1)
+                worker_sleep(0.1)
             _update_hibernate_status_if_current(
                 request_id,
                 state="cancelled_parent_handoff_timeout",
@@ -2979,7 +4072,7 @@ def request_hibernate(delay_seconds: int = 5) -> bool:
                 f"[power] hibernate helper dispatch failed; attempt={attempt}/3; "
                 f"winerror={winerror}; GetLastError={last_error}; exception={exc!r}.")
             if attempt < 3:
-                time.sleep(3)
+                worker_sleep(3)
     _update_hibernate_status_if_current(
         request_id,
         state="cancelled_parent_dispatch_failed",
@@ -3074,7 +4167,7 @@ def hibernate_helper(
                 wait_started_wall).isoformat(timespec="seconds"),
             wait_started_monotonic=wait_started_monotonic,
         )
-        time.sleep(expected_delay)
+        worker_sleep(expected_delay)
         actual_elapsed = max(
             0.0,
             time.monotonic() - wait_started_monotonic,
@@ -3130,7 +4223,11 @@ def hibernate_helper(
                     f"request_id={request_id}.")
                 return 0
             release_guard()
-            succeeded = bool(set_suspend_state(True, False, False))
+            with _HelperAction() as allowed:
+                if not allowed:
+                    save_current(state="cancelled_by_new_worker")
+                    return 0
+                succeeded = bool(set_suspend_state(True, False, False))
             last_error = ctypes.get_last_error()
             save_current(
                 api_result=succeeded, last_error=last_error,
@@ -3167,7 +4264,7 @@ def hibernate_helper(
                 save_current(
                     state="retry_guard_acquired",
                     guard_acquired_at=datetime.now().isoformat(timespec="seconds"))
-                time.sleep(5)
+                worker_sleep(5)
         append_log(
             "[power-helper] SetSuspendState failed after 3 attempts; "
             "dispatching shutdown.exe /h once as a non-blocking fallback.")
@@ -3177,12 +4274,21 @@ def hibernate_helper(
                 | getattr(subprocess, "DETACHED_PROCESS", 0)
                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             )
-            fallback = subprocess.Popen(
-                ["shutdown.exe", "/h"], cwd=str(APP_DIR),
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, close_fds=True,
-                creationflags=fallback_flags,
-            )
+            with _HelperAction() as allowed:
+                if not allowed:
+                    save_current(state="cancelled_by_new_worker")
+                    return 0
+                fallback = subprocess.Popen(
+                    ["shutdown.exe", "/h"], cwd=str(APP_DIR),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, close_fds=True, creationflags=fallback_flags,
+                )
+                # Keep the execution fence until the owned fallback finishes.
+                try:
+                    fallback.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    fallback.terminate()
+                    fallback.wait(timeout=3)
             save_current(
                 state="fallback_dispatched", fallback="shutdown.exe /h",
                 fallback_pid=fallback.pid)
@@ -3216,6 +4322,7 @@ def dispatch_timeout_recovery(hibernate_after_cleanup: bool) -> bool:
         getattr(subprocess, "CREATE_NO_WINDOW", 0)
         | getattr(subprocess, "DETACHED_PROCESS", 0)
         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | (getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000) if _WORKER_TOKEN else 0)
     )
     for attempt in range(1, 4):
         try:
@@ -3235,40 +4342,39 @@ def dispatch_timeout_recovery(hibernate_after_cleanup: bool) -> bool:
                 f"GetLastError={ctypes.get_last_error() if os.name == 'nt' else 0}; "
                 f"exception={exc!r}.")
             if attempt < 3:
-                time.sleep(3)
+                worker_sleep(3)
     return False
 
 
 def timeout_recovery_helper(hibernate_after_cleanup: bool) -> int:
+    with _HelperAction() as allowed:
+        if not allowed:
+            append_log("[watchdog-helper] 旧任务恢复请求已失效，不清理 MuMu、不休眠。")
+            return 0
+        return _timeout_recovery_owned(hibernate_after_cleanup)
+
+
+def _timeout_recovery_owned(hibernate_after_cleanup: bool) -> int:
     """Clean a timed-out task after its worker exits, then optionally hibernate."""
     power_guard = KeepAwake()
     power_guard.__enter__()
     try:
         append_log("[watchdog-helper] waiting 5s for the timed-out worker to exit.")
-        time.sleep(5)
+        if not _helper_wait(5):
+            append_log("[watchdog-helper] 手动请求到达，取消延迟清理并保留 MuMu。")
+            return 0
         settings = load_settings()
         try:
             timed_out_result = json.loads(RESULT_FILE.read_text(encoding="utf-8"))
-            ocr_pid = int(timed_out_result.get("ocr_server_pid") or 0)
-            expected_ocr_exe = Path(str(timed_out_result.get("ocr_server_exe") or ""))
-            if ocr_pid > 0 and ocr_pid != os.getpid() and expected_ocr_exe.is_file():
-                add_runtime_site_packages(Path(settings["baas_root"]))
-                psutil = importlib.import_module("psutil")
-                process = psutil.Process(ocr_pid)
-                actual_exe = Path(process.exe())
-                if actual_exe.resolve() == expected_ocr_exe.resolve():
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except psutil.TimeoutExpired:
-                        process.kill()
-                    append_log(f"[watchdog-helper] orphan OCR process {ocr_pid} stopped.")
-                else:
-                    append_log(
-                        f"[watchdog-helper] skipped OCR pid {ocr_pid}; executable identity changed.")
+            if timed_out_result.get("worker_token") == os.environ.get("BACOFFEE_WORKER_TOKEN"):
+                _stop_owned_ocr(timed_out_result)
+            else:
+                append_log("[watchdog-helper] 忽略不属于本轮的 OCR 记录。")
         except Exception as exc:
             append_log(f"[watchdog-helper] OCR cleanup note: {exc!r}.")
         try:
+            if not _helper_current():
+                return 0
             append_log("[watchdog-helper] closing MuMu started by the timed-out task.")
             close_mumu_completely(settings)
             append_log("[watchdog-helper] MuMu cleanup completed.")
@@ -3333,8 +4439,257 @@ def confirm_scheduled_run_with_active_mumu(processes: list[str]) -> bool:
     return answer != 7
 
 
-def run_worker(scheduled: bool = False) -> int:
+GAME_UPDATE_MIN_SCORE = 0.80
+SERVER_MAINTENANCE_MIN_SCORE = 0.85
+# Current 1280x720 BAAS frames and notice geometry match the supplied crop at 1:1.
+SERVER_MAINTENANCE_REFERENCE_WIDTH = 1280
+
+
+class ServerMaintenanceSkipped(Exception):
+    """BAC-only control flow after BAAS has stopped the current startup."""
+
+
+class GameUpdateDownloadSkipped(Exception):
+    """Stop only this startup when automatic game update downloads are disabled."""
+
+
+def _server_maintenance_matches(frame, template, cache: dict, min_score: float = SERVER_MAINTENANCE_MIN_SCORE, strict: bool = False) -> bool:
+    """Inspect only the central notice region of an existing in-memory frame."""
+    try:
+        if frame is None or template is None or frame.size == 0 or template.size == 0:
+            raise ValueError("维护/更新匹配输入不可用")
+        if strict and (frame.ndim != 3 or frame.shape[2] not in (3, 4) or template.ndim != 3 or template.shape[2] not in (3, 4)):
+            raise ValueError("维护/更新画面格式不可用")
+        height, width = frame.shape[:2]
+        if cache.get("width") != width:
+            # An all-opaque alpha mask is redundant and can yield non-finite
+            # OpenCV masked correlations on flat notification backgrounds.
+            matched_template = template
+            if template.ndim == 3 and template.shape[2] == 4 and (template[:, :, 3] == 255).all():
+                matched_template = template[:, :, :3]
+            scale = width / SERVER_MAINTENANCE_REFERENCE_WIDTH
+            if abs(scale - 1.0) > 0.01:
+                cv2 = importlib.import_module("cv2")
+                scaled = cv2.resize(matched_template, (
+                    max(1, int(matched_template.shape[1] * scale)),
+                    max(1, int(matched_template.shape[0] * scale))), interpolation=cv2.INTER_LINEAR)
+            else:
+                scaled = matched_template
+            cache.update(width=width, template=scaled)
+        roi = frame[int(height * 0.20):int(height * 0.75),
+                    int(width * 0.20):int(width * 0.80)]
+        score, _, _ = _bash_template_match(roi, cache["template"], strict=strict)
+        if strict and not float("-inf") < score < float("inf"):
+            raise ValueError("维护/更新匹配结果不可用")
+        return min_score <= score < float("inf")
+    except Exception:
+        if strict:
+            raise
+        return False
+
+
+def _maintenance_state_checkpoint() -> None:
+    worker_checkpoint()
+    if _WORKER_TOKEN:
+        owner = _owner_state()
+        if (owner.get("token") != _WORKER_TOKEN or owner.get("finished")
+                or owner.get("cancel_requested")):
+            raise WorkerCancelled("维护接续状态执行权已失效")
+
+
+def _read_maintenance_state():
+    _maintenance_state_checkpoint()
+    path = DATA_DIR / "maintenance_state.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(state, dict) or state.get("schema") != 1
+                or not isinstance(state.get("pending"), dict)
+                or any(not isinstance(key, str) or not isinstance(value, dict)
+                       or not isinstance(value.get("detected_at"), str)
+                       for key, value in state["pending"].items())):
+            raise ValueError("状态结构无效")
+        return state
+    except FileNotFoundError:
+        return {"schema": 1, "pending": {}}
+    except (OSError, ValueError) as exc:
+        append_log(f"[维护接续] 状态读取失败，保留原文件，本轮仍检查维护与更新：{exc}")
+        return None
+
+
+def _write_maintenance_state(state) -> None:
+    _maintenance_state_checkpoint()
+    if state is None:
+        raise ValueError("原接续状态不可读，不能安全覆盖")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = DATA_DIR / "maintenance_state.json.tmp"
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(state, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _maintenance_state_checkpoint()
+        os.replace(temporary, DATA_DIR / "maintenance_state.json")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+
+def _restart_with_maintenance_guard(thread_obj, allow_update_download: bool = True,
+                                    on_maintenance=None, diagnostics=None):
+    """Protect every startup frame and require the original home-page detection."""
+    templates = []
+    for filename in ("server_maintenance.png", "game_update_required.png"):
+        try:
+            template = _read_cv_image(UI_ASSET_DIR / filename)
+            if template is None or template.size == 0 or template.ndim != 3 or template.shape[2] not in (3, 4):
+                raise ValueError("图片无效")
+        except Exception as exc:
+            raise RuntimeError(f"启动保护图片无法读取：{filename}") from exc
+        templates.append(template)
+    from core.exception import RequestHumanTakeOver
+    original = thread_obj.update_screenshot_array
+    original_main = thread_obj.to_main_page
+    had_instance_method = "update_screenshot_array" in vars(thread_obj)
+    had_instance_main = "to_main_page" in vars(thread_obj)
+    callback_name = "_bacoffee_game_update_match"
+    had_instance_callback = callback_name in vars(thread_obj)
+    original_callback = getattr(thread_obj, callback_name, None)
+    before_name = "_bacoffee_game_update_before_confirm"
+    had_before = before_name in vars(thread_obj)
+    original_before = getattr(thread_obj, before_name, None)
+    detected = None
+    protection_error = None
+    main_error = None
+    main_attempted = False
+    home_confirmed = False
+    frames_checked = 0
+    cache, download_cache = {}, {}
+
+    def matches(template, template_cache, threshold):
+        nonlocal protection_error
+        try:
+            return _server_maintenance_matches(
+                getattr(thread_obj, "latest_img_array", None), template, template_cache, threshold, strict=True)
+        except Exception as exc:
+            protection_error = RuntimeError("启动维护/更新检测不可用，已停止本轮游戏操作。")
+            thread_obj.flag_run = False
+            raise RequestHumanTakeOver(str(protection_error)) from exc
+
+    def match_update_download():
+        worker_checkpoint()
+        return matches(templates[1], download_cache, GAME_UPDATE_MIN_SCORE)
+
+    def update_and_check(*args, **kwargs):
+        nonlocal detected, frames_checked
+        if detected or protection_error:
+            raise RequestHumanTakeOver("BACoffee startup stopped")
+        value = original(*args, **kwargs)
+        worker_checkpoint()
+        frames_checked += 1
+        if matches(templates[0], cache, SERVER_MAINTENANCE_MIN_SCORE):
+            worker_checkpoint()
+            detected = "maintenance"
+            thread_obj.flag_run = False
+            if on_maintenance is not None:
+                on_maintenance()
+            raise RequestHumanTakeOver("BACoffee server maintenance")
+        if not allow_update_download and match_update_download():
+            worker_checkpoint()
+            detected = "update_download"
+            thread_obj.flag_run = False
+            raise RequestHumanTakeOver("BACoffee update download disabled")
+        return value
+
+    def before_download_confirm(image_name):
+        nonlocal detected
+        _maintenance_state_checkpoint()
+        if not allow_update_download:
+            detected = "update_download"
+            thread_obj.flag_run = False
+            raise RequestHumanTakeOver("BACoffee update download disabled")
+        worker_sleep(1.0)
+        _maintenance_state_checkpoint()
+        thread_obj.update_screenshot_array()
+        _maintenance_state_checkpoint()
+        if match_update_download():
+            return True
+        from core import image
+        return image.compare_image(thread_obj, image_name)
+
+    def confirm_main(*args, **kwargs):
+        nonlocal main_attempted, home_confirmed, main_error
+        main_attempted = True
+        try:
+            value = original_main(*args, **kwargs)
+            worker_checkpoint()
+            home_confirmed = bool(value is not False and frames_checked and thread_obj.flag_run
+                                  and not detected and not protection_error and not main_error)
+            return value
+        except Exception as exc:
+            if not detected and not protection_error:
+                main_error = exc
+            raise
+
+    thread_obj.update_screenshot_array = update_and_check
+    thread_obj.to_main_page = confirm_main
+    try:
+        setattr(thread_obj, before_name, before_download_confirm)
+        if allow_update_download:
+            setattr(thread_obj, callback_name, match_update_download)
+        try:
+            value = thread_obj.solve("restart")
+            worker_checkpoint()
+            if value and not main_attempted and not detected and not protection_error:
+                confirm_main()
+        except RequestHumanTakeOver:
+            if not detected and not protection_error:
+                raise
+            value = False
+    finally:
+        if had_before:
+            setattr(thread_obj, before_name, original_before)
+        elif before_name in vars(thread_obj):
+            delattr(thread_obj, before_name)
+        if allow_update_download:
+            if had_instance_callback:
+                setattr(thread_obj, callback_name, original_callback)
+            elif callback_name in vars(thread_obj):
+                delattr(thread_obj, callback_name)
+        if had_instance_main:
+            thread_obj.to_main_page = original_main
+        else:
+            del thread_obj.to_main_page
+        if had_instance_method:
+            thread_obj.update_screenshot_array = original
+        else:
+            del thread_obj.update_screenshot_array
+        if diagnostics is not None:
+            diagnostics["startup_home_confirmed"] = home_confirmed
+            diagnostics["startup_frames_checked"] = frames_checked
+    worker_checkpoint()
+    if protection_error:
+        raise protection_error
+    if detected == "maintenance":
+        raise ServerMaintenanceSkipped()
+    if detected == "update_download":
+        raise GameUpdateDownloadSkipped()
+    if main_error:
+        raise main_error
+    if value and not home_confirmed:
+        raise RuntimeError("启动流程未实际确认游戏主页，已停止本轮任务。")
+    return value
+
+
+
+def _run_worker_owned(scheduled: bool = False) -> int:
+    global _WORKER_BAAS
+    worker_checkpoint()
+    started_at = datetime.now()
+    maintenance_enabled = True
     compatibility = source_compatibility_diagnostic()
+    append_log(f"[版本] build_id={compatibility.get('build_id', 'unknown')}; "
+               f"source_sha256={compatibility.get('actual_sha256', 'unknown')}; "
+               f"app_dir={APP_DIR}; script={Path(__file__).resolve()}")
     if not compatibility.get("ok"):
         append_log(
             "[源码一致性] 失败：旁置 BACoffee.py 与构建输入不一致，拒绝启动 worker；"
@@ -3344,7 +4699,7 @@ def run_worker(scheduled: bool = False) -> int:
         return 3
     sanitize_external_runtime()
     settings = load_settings()
-    invalidate_hibernate_request()
+    allow_update_download = bool(settings.get("auto_download_game_updates", False))
     invitation_student_snapshot = build_invitation_student_snapshot(settings)
     baas_root = Path(settings["baas_root"]).resolve()
     game_server = normalize_game_server(settings.get("game_server"))
@@ -3356,9 +4711,16 @@ def run_worker(scheduled: bool = False) -> int:
     resume_age = resume_event["age_seconds"] if resume_event else None
     wake_by_task = bool(resume_event and resume_event["bacoffee_wake"])
     result = {
-        "started": datetime.now().isoformat(timespec="seconds"),
+        "started": started_at.isoformat(timespec="seconds"),
+        "maintenance_detection_enabled": maintenance_enabled,
         "state": "running",
         "scheduled": scheduled,
+        "worker_token": _WORKER_TOKEN,
+        "build_id": compatibility.get("build_id"),
+        "source_sha256": compatibility.get("actual_sha256"),
+        "app_dir": str(APP_DIR),
+        "script_path": str(Path(__file__).resolve()),
+        "cafe_recovery_count": 0,
         "recent_resume_seconds": resume_age,
         "wake_event_from_bacoffee_task": wake_by_task,
         "last_input_tick_at_start": input_tick_at_start,
@@ -3370,14 +4732,34 @@ def run_worker(scheduled: bool = False) -> int:
             for cafe_no, names in invitation_student_snapshot.items()
         },
     }
+    maintenance_state = _read_maintenance_state()
+    maintenance_scope = f"{game_server}:{int(settings.get('mumu_vm_index', 1))}"
+    pending_at_start = (maintenance_scope in maintenance_state["pending"]
+                        if maintenance_state is not None else None)
+    result.update(maintenance_pending_at_start=pending_at_start, startup_home_confirmed=False,
+                  maintenance_state_readable=maintenance_state is not None,
+                  maintenance_state_saved=False, maintenance_state_cleared=False)
+    if pending_at_start:
+        append_log("[维护接续] 检测到上次维护记录，本次继续检查维护与更新。")
+
+    def save_maintenance_pending():
+        _maintenance_state_checkpoint()
+        if maintenance_state is not None:
+            maintenance_state["pending"][maintenance_scope] = {
+                "detected_at": datetime.now().isoformat(timespec="seconds")}
+        try:
+            _write_maintenance_state(maintenance_state)
+            result["maintenance_state_saved"] = True
+        except WorkerCancelled:
+            raise
+        except Exception as exc:
+            result["maintenance_state_error"] = str(exc)
+
     run_started = time.perf_counter()
-    preserve_existing_mumu = False
+    preserve_existing_mumu = os.environ.get("BACOFFEE_HANDOFF_PRESERVE") == "1"
 
     if scheduled:
         settle_seconds = min(30, max(5, int(settings.get("wake_stabilization_seconds", 10))))
-        append_log(
-            f"[wake] scheduled worker started; recent_resume_age="
-            f"{f'{resume_age:.1f}s' if resume_age is not None else 'not-detected'}.")
         append_log(f"[wake] waiting {settle_seconds}s for Windows, storage, network, and services to settle.")
         hold_wake_stabilization(settle_seconds)
         required_paths_ready = baas_root.is_dir() and Path(settings.get("baas_python", "")).is_file()
@@ -3421,6 +4803,8 @@ def run_worker(scheduled: bool = False) -> int:
 
         def timeout_watchdog():
             if watchdog_cancel.wait(timeout_minutes * 60):
+                return
+            if _WORKER_CANCELLED.is_set() or _manual_pending():
                 return
             end_tick = last_input_tick()
             end_idle = input_idle_seconds(end_tick)
@@ -3471,9 +4855,20 @@ def run_worker(scheduled: bool = False) -> int:
     def run_stage(name, function):
         started = time.perf_counter()
         result["active_stage"] = name
-        append_log(f"[阶段] {name}：开始。")
+        worker_checkpoint()
+        if name in {"启动所选 MuMu 实例", "启动游戏并进入主界面", "执行咖啡厅摸头与邀请"}:
+            append_log(f"[阶段] {name}：开始。")
         try:
             value = function()
+            worker_checkpoint()
+        except (ServerMaintenanceSkipped, GameUpdateDownloadSkipped) as exc:
+            result["stages"][name] = {
+                "seconds": round(time.perf_counter() - started, 3),
+                "status": "skipped_update_download" if isinstance(exc, GameUpdateDownloadSkipped) else "skipped_maintenance"}
+            raise
+        except WorkerCancelled:
+            result["stages"][name] = {"seconds": round(time.perf_counter() - started, 3), "status": "interrupted"}
+            raise
         except Exception as exc:
             elapsed = time.perf_counter() - started
             result["stages"][name] = {"seconds": round(elapsed, 3), "status": "exception"}
@@ -3492,8 +4887,7 @@ def run_worker(scheduled: bool = False) -> int:
     thread_obj = None
     power_guard = None
     try:
-        append_log("开始执行咖啡厅任务。")
-        append_log("[task] task started; state=running.")
+        append_log(f"[task] task started; state=running; mode={'scheduled' if scheduled else 'manual'}; instance={settings.get('mumu_vm_index', 1)}.")
         power_guard = KeepAwake()
         power_guard.__enter__()
         append_log(
@@ -3503,35 +4897,51 @@ def run_worker(scheduled: bool = False) -> int:
             f"最近唤醒={f'{resume_age:.1f} 秒前' if resume_age is not None else '未检测到'}；"
             f"输入计时={input_tick_at_start}；"
             f"启动时空闲={f'{input_idle_at_start:.1f} 秒' if input_idle_at_start is not None else '不可读取'}。")
-        port_result = run_stage(
-            "查询所选 MuMu ADB 端口",
-            lambda: _mumu_port_result_for_settings(settings),
-        )
-        if not port_result.get("port"):
-            reason = port_result.get("diagnostic", {}).get("reason", "未知原因")
-            raise RuntimeError(f"无法确认所选 MuMu 实例的 ADB 端口：{reason}")
-        profile = run_stage(
-            "生成 BACoffee 独立配置",
-            lambda: prepare_profile(settings, port_result),
-        )
+        # Check the selected runtime/templates before starting any instance.
+        for template in ("config.json", "event.json"):
+            if not (baas_root / "config" / "cn" / template).is_file():
+                raise FileNotFoundError(f"找不到 BAAS 配置模板：{template}")
+        def query_stage(query):
+            value = run_stage("查询所选 MuMu ADB 端口", query)
+            result["active_stage"] = "启动所选 MuMu 实例"
+            return value
+        port_result = {}
         if not run_stage(
             "启动所选 MuMu 实例",
-            lambda: launch_selected_mumu(settings, port_result=port_result),
+            lambda: launch_selected_mumu(settings, port_result=port_result, query_callback=query_stage),
         ):
             raise RuntimeError("所选 MuMu 实例未能启动或 ADB 端口未就绪。")
-        run_stage(
-            "写入已验证 MuMu ADB 端口",
-            lambda: update_profile_adb_port(profile, port_result),
-        )
+        profile = run_stage("生成 BACoffee 独立配置", lambda: prepare_profile(settings, port_result))
+        run_stage("写入已验证 MuMu ADB 端口", lambda: update_profile_adb_port(profile, port_result))
         site_packages = add_runtime_site_packages(baas_root)
         sys.path.insert(0, str(baas_root))
         os.chdir(baas_root)
         import_started = time.perf_counter()
         result["active_stage"] = "加载 BAAS 模块"
-        append_log("[阶段] 加载 BAAS 模块：开始。")
         from main import Main
         from core.config.config_set import ConfigSet
         from module import cafe_reward
+        from core.utils import Logger
+        install_baas_operation_info_filter(Logger)
+        # BAAS owns several asynchronous control paths. Guard the shared classes
+        # before init_all_data creates their instances; no third-party file changes.
+        from core.device.Control import Control
+        from core.device.Screenshot import Screenshot
+        from core.device.connection import Connection
+        for target, names in (
+            (Control, ("click", "swipe", "long_click", "scroll")),
+            (Screenshot, ("screenshot",)),
+            (Connection, ("launch_app", "close_current_app", "get_current_package", "start_app")),
+        ):
+            for method in names:
+                original = getattr(target, method, None)
+                if callable(original):
+                    def guarded(*args, _original=original, **kwargs):
+                        worker_checkpoint()
+                        value = _original(*args, **kwargs)
+                        worker_checkpoint()
+                        return value
+                    setattr(target, method, guarded)
         import_elapsed = time.perf_counter() - import_started
         result["stages"]["加载 BAAS 模块"] = {"seconds": round(import_elapsed, 3), "status": "completed"}
         append_log(f"[阶段] 加载 BAAS 模块：完成（{import_elapsed:.1f} 秒）。")
@@ -3546,12 +4956,16 @@ def run_worker(scheduled: bool = False) -> int:
             raise RuntimeError("BAAS OCR 服务启动失败。请确认 BAAS 目录可写，并查看 BAAS OCR 日志。")
         if main_instance.ocr.client.server_process is not None:
             result["ocr_server_pid"] = main_instance.ocr.client.server_process.pid
+            import psutil
+            result["ocr_server_created"] = psutil.Process(result["ocr_server_pid"]).create_time()
             result["ocr_server_exe"] = str(main_instance.ocr.client.exe_path)
             RESULT_FILE.write_text(
                 json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         config_set = run_stage("读取任务配置", lambda: ConfigSet(str(profile)))
         thread_obj = run_stage(
             "创建 BAAS 任务线程", lambda: main_instance.get_thread(config_set, name="BACoffee"))
+        _WORKER_BAAS = thread_obj
+        _guard_baas_actions(thread_obj)
         thread_obj.bacoffee_student_snapshot = invitation_student_snapshot
         thread_obj.bacoffee_invitation_results = []
         thread_obj.bacoffee_run_result = result
@@ -3563,6 +4977,7 @@ def run_worker(scheduled: bool = False) -> int:
             raise RuntimeError(
                 f"所选{game_server}未安装或连接初始化失败（目标包：{package_text}），"
                 "请检查模拟器中是否已安装所选游戏渠道。")
+        _guard_baas_actions(thread_obj)
         detected_package = str(getattr(thread_obj, "package_name", target_package or "未知包名"))
         append_log(f"[渠道] BAAS 模式=CN；目标包={detected_package}")
         if scheduled and not wake_by_task:
@@ -3576,8 +4991,20 @@ def run_worker(scheduled: bool = False) -> int:
                 append_log(
                     "[启动诊断] 延迟复查到 Windows 唤醒事件："
                     f"{resume_age:.1f} 秒前；来源包含 BACoffee-Cafe={'是' if wake_by_task else '否'}。")
-        if not run_stage("启动游戏并进入主界面", lambda: thread_obj.solve("restart")):
+        if not run_stage("启动游戏并进入主界面", lambda: _restart_with_maintenance_guard(thread_obj, allow_update_download, save_maintenance_pending, result)):
             raise RuntimeError("游戏启动或进入主界面失败。")
+        if allow_update_download and result["startup_home_confirmed"] and pending_at_start:
+            _maintenance_state_checkpoint()
+            updated_state = dict(maintenance_state, pending=dict(maintenance_state["pending"]))
+            del updated_state["pending"][maintenance_scope]
+            try:
+                _write_maintenance_state(updated_state)
+                result["maintenance_state_cleared"] = True
+            except WorkerCancelled:
+                raise
+            except Exception as exc:
+                result["maintenance_state_error"] = str(exc)
+                raise RuntimeError("已确认主页，但维护接续状态清除失败；原记录保留。") from exc
         if not run_stage("执行咖啡厅摸头与邀请", lambda: run_cafe_with_recovery(thread_obj, cafe_reward)):
             raise RuntimeError("咖啡厅任务未能完成。")
         if preserve_existing_mumu:
@@ -3593,6 +5020,24 @@ def run_worker(scheduled: bool = False) -> int:
             if preserve_existing_mumu else "咖啡厅任务完成，模拟器已关闭。")
         append_log(result["message"])
         return_code = 0
+    except GameUpdateDownloadSkipped:
+        result.update(success=False, state="skipped_update_download", skipped=True,
+                      skip_reason="update_download_disabled", message="更新下载跳过")
+        return_code = 0
+        append_log("[游戏更新] 已关闭自动下载，本次任务跳过；后续计划保留。")
+    except ServerMaintenanceSkipped:
+        result.update(success=False, state="skipped_maintenance", skipped=True,
+                      skip_reason="server_maintenance", message="维护跳过")
+        return_code = 0
+        if result["maintenance_state_saved"]:
+            append_log("[维护] 检测到服务器维护，本次任务跳过；已保存待更新状态，后续任务继续检查。")
+        else:
+            append_log("[维护] 维护已停止，接续状态保存失败；后续计划保留。" + result.get("maintenance_state_error", ""))
+    except WorkerCancelled:
+        preserve_existing_mumu = True
+        result.update(success=False, state="interrupted", message="被手动任务接管")
+        return_code = 0
+        append_log("[任务互斥] 被手动任务接管，停止本轮自动执行并保留 MuMu。")
     except Exception as exc:
         import traceback
         result["message"] = str(exc)
@@ -3601,6 +5046,10 @@ def run_worker(scheduled: bool = False) -> int:
         append_log("任务失败：" + str(exc))
         return_code = 1
     finally:
+        watchdog_cancel.set()
+        if _WORKER_CANCELLED.is_set():
+            preserve_existing_mumu = True
+            result.update(success=False, state="interrupted", message="被手动任务接管")
         try:
             if (main_instance is not None and main_instance.ocr is not None
                     and main_instance.ocr.client.server_process is not None):
@@ -3615,11 +5064,15 @@ def run_worker(scheduled: bool = False) -> int:
             try:
                 close_started = time.perf_counter()
                 append_log("[阶段] 清理 MuMu 虚拟机与主程序：开始。")
+                worker_checkpoint()
                 close_mumu_completely(settings)
                 close_elapsed = time.perf_counter() - close_started
                 result["stages"]["清理 MuMu 虚拟机与主程序"] = {
                     "seconds": round(close_elapsed, 3), "status": "completed"}
                 append_log(f"MuMu 虚拟机和主程序均已关闭（清理耗时 {close_elapsed:.1f} 秒）。")
+            except WorkerCancelled:
+                preserve_existing_mumu = True
+                result.update(success=False, state="interrupted", message="被手动任务接管")
             except Exception as exc:
                 append_log("关闭 MuMu 时出现提示：" + str(exc))
         try:
@@ -3631,9 +5084,13 @@ def run_worker(scheduled: bool = False) -> int:
         result["total_seconds"] = round(time.perf_counter() - run_started, 3)
         append_log(
             f"[task] task finished; state={result['state']}; exit_code={return_code}; "
-            f"elapsed={result['total_seconds']:.1f}s.")
+            f"elapsed={result['total_seconds']:.1f}s; cafe_recovery_count={result.get('cafe_recovery_count', 0)}.")
         RESULT_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    if _WORKER_CANCELLED.is_set():
+        if power_guard is not None:
+            power_guard.__exit__(None, None, None)
+        worker_checkpoint()
     input_tick_at_end = last_input_tick()
     input_idle_at_end = input_idle_seconds(input_tick_at_end)
     if scheduled and not wake_by_task:
@@ -3658,7 +5115,7 @@ def run_worker(scheduled: bool = False) -> int:
     result["unattended"] = unattended
     should_hibernate = bool(
         scheduled and settings.get("hibernate_after_success")
-        and unattended and not preserve_existing_mumu
+        and unattended and not preserve_existing_mumu and not _WORKER_CANCELLED.is_set()
     )
     result["will_hibernate"] = should_hibernate
     append_log(
@@ -3667,7 +5124,7 @@ def run_worker(scheduled: bool = False) -> int:
         f"结束时空闲={f'{input_idle_at_end:.1f} 秒' if input_idle_at_end is not None else '不可读取'}；"
         f"执行期间键鼠变化={'是' if user_interacted else '否'}；"
         f"无人使用判定={'是' if unattended else '否'}；"
-        f"任务结果={'成功' if result['success'] else '失败'}；"
+        f"任务结果={'维护跳过' if result['state'] == 'skipped_maintenance' else ('更新下载跳过' if result['state'] == 'skipped_update_download' else ('成功' if result['success'] else '失败'))}；"
         f"将休眠={'是' if should_hibernate else '否'}；"
         f"总耗时={result['total_seconds']:.1f} 秒。")
     RESULT_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3676,7 +5133,7 @@ def run_worker(scheduled: bool = False) -> int:
         append_log("[power] execution-state lock is retained through final I/O and helper handoff.")
         result["power_state"] = "stabilizing_before_hibernate"
         RESULT_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        time.sleep(3)
+        worker_sleep(3)
         collect_power_diagnostics()
         result["power_state"] = "dispatching_hibernate_helper"
         result["hibernate_dispatch_succeeded"] = request_hibernate(5)
@@ -3750,9 +5207,11 @@ def self_test() -> int:
         print(f"{'[正常]' if ok else '[缺失]'} {label}: {path}")
         failed |= not ok
     try:
-        profile = prepare_profile(settings)
-        print(f"[正常] 独立配置已准备：{profile}")
-        json.loads((profile / "config.json").read_text(encoding="utf-8"))
+        # Self-test checks templates only; it must not discover/start a device or
+        # write an unverified endpoint into a shared runtime profile.
+        for template in ("config.json", "event.json"):
+            json.loads((baas / "config" / "cn" / template).read_text(encoding="utf-8"))
+        print("[正常] BAAS 配置模板可读取；运行配置将在设备验证后生成。")
         site_packages = add_runtime_site_packages(baas)
         builtin_dir, builtin_paths, invalid_builtin = inspect_builtin_student_library()
         expected_count = expected_builtin_student_count()
@@ -4404,16 +5863,16 @@ def launch_gui_v3() -> None:
             pass
 
     from PyQt5.QtCore import (QEvent, QEasingCurve, QObject, QPoint, QPointF,
-                              QProcess, QProcessEnvironment, QRectF, QSize,
-                              Qt, QTimer, QVariantAnimation)
+                              QProcess, QProcessEnvironment, QRect, QRectF, QSize,
+                              Qt, QTimer, QVariantAnimation, QSignalBlocker)
     from PyQt5.QtGui import (QColor, QFont, QFontDatabase, QFontMetricsF, QIcon,
                               QImage, QLinearGradient, QPainter, QPainterPath,
-                              QPen, QPixmap)
+                              QPen, QPixmap, QTextOption, QWheelEvent)
     from PyQt5.QtNetwork import QLocalServer, QLocalSocket
     from PyQt5.QtWidgets import (QAction, QApplication, QDialog, QFileDialog,
-                                 QGridLayout, QHBoxLayout, QMenu, QMessageBox,
+                                 QDialogButtonBox, QGridLayout, QHBoxLayout, QLabel, QMenu, QMessageBox,
                                  QScrollArea, QSizePolicy, QSystemTrayIcon,
-                                 QToolButton, QToolTip, QVBoxLayout, QWidget)
+                                 QTextEdit, QToolButton, QToolTip, QVBoxLayout, QWidget)
     from qfluentwidgets import (BodyLabel, CardWidget, ComboBox, FluentIcon as FIF,
                                 FluentStyleSheet,
                                 LineEdit, MSFluentWindow, PrimaryPushButton, PushButton,
@@ -4438,6 +5897,103 @@ def launch_gui_v3() -> None:
             brand_font_family = families[0]
     setTheme(theme_map.get(settings.get("theme"), Theme.AUTO))
     setThemeColor("#00A4E4")
+
+    class GuiMessageBox(QMessageBox):
+        """Style only BAC's active Qt messages, retaining QMessageBox results."""
+        def exec_(self):
+            family = ("Microsoft YaHei UI" if "Microsoft YaHei UI" in QFontDatabase().families()
+                      else "Microsoft YaHei")
+            font = QFont(family, 10)
+            font.setWeight(QFont.Normal)
+            self.setFont(font)
+            dark = isDarkTheme()
+            background, foreground = ("#25282E", "#F4F6F9") if dark else ("#FFFFFF", "#20242B")
+            secondary, hover, pressed, border = (("#34383F", "#414750", "#2C3036", "#69717E")
+                                                  if dark else ("#F3F5F7", "#E7EDF2", "#DAE3EB", "#A6B0BC"))
+            self.setStyleSheet(
+                f"QMessageBox {{ background: {background}; color: {foreground}; }}"
+                f"QMessageBox QLabel, QMessageBox QTextEdit {{ color: {foreground}; background: transparent; }}"
+                f"QMessageBox QPushButton {{ background: {secondary}; color: {foreground}; "
+                f"border: 1px solid {border}; border-radius: 6px; padding: 0 16px; }}"
+                f"QMessageBox QPushButton:hover {{ background: {hover}; }}"
+                f"QMessageBox QPushButton:pressed {{ background: {pressed}; }}"
+                'QMessageBox QPushButton[primary="true"] { background: #007EB5; color: white; border-color: #007EB5; }'
+                'QMessageBox QPushButton[primary="true"]:hover { background: #006FA0; }'
+                'QMessageBox QPushButton[primary="true"]:pressed { background: #005E88; }'
+                'QMessageBox QPushButton:focus { border: 2px solid #00A4E4; }')
+            layout = self.layout()
+            layout.setContentsMargins(24, 24, 24, 24)
+            layout.setSpacing(12)
+            screen = self.screen() or QApplication.primaryScreen()
+            area = screen.availableGeometry()
+            text_width = max(120, min(420, area.width() - 136))
+            label = self.findChild(QLabel, "qt_msgbox_label")
+            if label is not None:
+                label.setFont(font)
+                label.setTextFormat(Qt.PlainText)
+                label.setWordWrap(True)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                label.setMaximumWidth(text_width)
+                measured = label.fontMetrics().boundingRect(
+                    QRect(0, 0, text_width, 100000), Qt.TextWordWrap | Qt.TextWrapAnywhere, self.text()).height()
+                max_height = max(80, area.height() - 200)
+                if measured > max_height or len(self.text()) > 800 or any(len(word) > 100 for word in self.text().split()):
+                    # A scrollable, selectable body keeps long errors and paths complete.
+                    body = QTextEdit(self)
+                    body.setFont(font)
+                    body.setReadOnly(True)
+                    body.setFrameShape(QTextEdit.NoFrame)
+                    body.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+                    body.setPlainText(self.text())
+                    body.setFixedSize(text_width, min(max_height, max(100, measured + 12)))
+                    index = layout.indexOf(label)
+                    row, column, rows, columns = layout.getItemPosition(index)
+                    layout.removeWidget(label)
+                    label.hide()
+                    layout.addWidget(body, row, column, rows, columns)
+                elif len(self.text()) > 80:
+                    label.setMinimumWidth(text_width)
+            buttons = self.findChild(QDialogButtonBox)
+            if buttons is not None:
+                buttons.layout().setSpacing(10)
+            for button in self.buttons():
+                button.setFont(font)
+                button.setFixedHeight(34)
+                button.setMinimumWidth(88)
+                button.setProperty("primary", self.buttonRole(button) in (self.AcceptRole, self.YesRole, self.ApplyRole))
+                button.setAutoDefault(False)
+                button.style().unpolish(button)
+                button.style().polish(button)
+            if self.defaultButton() is not None:
+                self.defaultButton().setFocus(Qt.OtherFocusReason)
+            self.adjustSize()
+            return super().exec_()
+
+        @classmethod
+        def _show(cls, icon, parent, title, text, buttons, defaultButton):
+            box = cls(icon, title, text, buttons, parent)
+            if defaultButton != cls.NoButton:
+                box.setDefaultButton(defaultButton)
+            try:
+                return box.exec_()
+            finally:
+                box.deleteLater()
+
+        @classmethod
+        def question(cls, parent, title, text, buttons=QMessageBox.Yes | QMessageBox.No, defaultButton=QMessageBox.No):
+            return cls._show(cls.Question, parent, title, text, buttons, defaultButton)
+
+        @classmethod
+        def information(cls, parent, title, text, buttons=QMessageBox.Ok, defaultButton=QMessageBox.NoButton):
+            return cls._show(cls.Information, parent, title, text, buttons, defaultButton)
+
+        @classmethod
+        def warning(cls, parent, title, text, buttons=QMessageBox.Ok, defaultButton=QMessageBox.NoButton):
+            return cls._show(cls.Warning, parent, title, text, buttons, defaultButton)
+
+        @classmethod
+        def critical(cls, parent, title, text, buttons=QMessageBox.Ok, defaultButton=QMessageBox.NoButton):
+            return cls._show(cls.Critical, parent, title, text, buttons, defaultButton)
 
     def acquire_instance_mutex():
         if os.name != "nt":
@@ -4720,16 +6276,18 @@ def launch_gui_v3() -> None:
                 "border-radius: 17px; padding: 4px 14px; font-weight: 600;")
 
     class SchedulePlanIndicator(QWidget):
-        """Small read-only light that shows BACoffee's saved schedule state."""
+        """Read-only task existence status from the latest asynchronous query."""
         def __init__(self):
             super().__init__()
-            self._installed = False
+            self._installed = None
             self.setFixedSize(108, 30)
-            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.set_installed(None)
 
         def set_installed(self, installed):
-            self._installed = bool(installed)
-            self.setToolTip("休眠唤醒计划已安装" if self._installed else "休眠唤醒计划未安装")
+            self._installed = installed
+            self.setToolTip(
+                "任务存在，是否启用请以 Windows 计划状态为准" if installed is True else
+                "休眠唤醒计划未安装" if installed is False else "状态未知：正在查询或查询暂不可用")
             self.update()
 
         def refresh_theme(self):
@@ -4739,12 +6297,12 @@ def launch_gui_v3() -> None:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing)
             dark = isDarkTheme()
-            if self._installed:
+            if self._installed is True:
                 signal = QColor("#47D7A1" if dark else "#19A974")
                 label = "已安装"
             else:
                 signal = QColor("#A9B0BC" if dark else "#7A8492")
-                label = "未安装"
+                label = "未安装" if self._installed is False else "状态未知"
             background = QColor(signal)
             background.setAlpha(24 if dark else 18)
             border = QColor(signal)
@@ -4872,6 +6430,11 @@ def launch_gui_v3() -> None:
                 button.setIconSize(QSize(76, 76))
                 button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
                 button.setFixedSize(132, 128)
+                student_font = QFont("Segoe UI")
+                student_font.setPointSizeF(9.5)
+                student_font.setWeight(QFont.Normal)
+                button.setFont(student_font)
+                button.setToolTip(Path(name).stem)
                 button.clicked.connect(lambda _checked=False, value=name: self.toggle(value))
                 self.buttons[name] = button
                 self.grid.addWidget(button, position // 6, position % 6)
@@ -4993,6 +6556,43 @@ def launch_gui_v3() -> None:
             self._help_text = text
             self.setAccessibleName("推迟计划说明")
             self.setCursor(Qt.PointingHandCursor)
+            self._text_color = QColor("#59616E")
+            self._ring_color = QColor(32, 36, 43, 110)
+            self._accent_color = QColor("#28A9F1")
+            self.setStyleSheet(
+                "QToolButton { border: none; background: transparent; padding: 0; }")
+
+        def set_colors(self, text_color, ring_color, accent_color):
+            self._text_color = QColor(text_color)
+            self._ring_color = QColor(ring_color)
+            self._accent_color = QColor(accent_color)
+            self.update()
+
+        def paintEvent(self, event):
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            center = QRectF(self.rect()).center()
+            diameter = max(0.0, min(self.width(), self.height()) - 2.0)
+            circle = QRectF(center.x() - diameter / 2,
+                            center.y() - diameter / 2, diameter, diameter)
+            active = self.underMouse() or self.hasFocus()
+            painter.setPen(QPen(self._accent_color if active else self._ring_color, 1.0))
+            if active:
+                background = QColor(self._ring_color)
+                background.setAlpha(12)
+                painter.setBrush(background)
+            else:
+                painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(circle)
+            font = QFont("Segoe UI")
+            font.setPixelSize(11)
+            font.setWeight(QFont.Medium)
+            glyph = QPainterPath()
+            glyph.addText(0, 0, font, self.text())
+            bounds = glyph.boundingRect()
+            glyph.translate(center.x() - bounds.center().x(),
+                            center.y() - bounds.center().y())
+            painter.fillPath(glyph, self._accent_color if active else self._text_color)
 
         def _show_help(self):
             QToolTip.showText(
@@ -5195,6 +6795,33 @@ def launch_gui_v3() -> None:
             self.setMinimumHeight(self.grid.sizeHint().height())
             self.updateGeometry()
 
+    class NoWheelSpinBox(SpinBox):
+        def __init__(self, parent=None):
+            super().__init__(parent=parent)
+            for child in (self.lineEdit(), self.upButton, self.downButton):
+                child.installEventFilter(self)
+
+        def eventFilter(self, watched, event):
+            if event.type() == QEvent.Wheel:
+                self.wheelEvent(event)
+                return True
+            return super().eventFilter(watched, event)
+
+        def wheelEvent(self, event):
+            parent = self.parentWidget()
+            while parent is not None and not isinstance(parent, QScrollArea):
+                parent = parent.parentWidget()
+            if parent is None:
+                event.ignore()
+                return
+            viewport = parent.viewport()
+            forwarded = QWheelEvent(
+                QPointF(viewport.mapFromGlobal(event.globalPos())), event.globalPosF(),
+                event.pixelDelta(), event.angleDelta(), event.buttons(), event.modifiers(),
+                event.phase(), event.inverted(), event.source())
+            QApplication.sendEvent(viewport, forwarded)
+            event.accept()  # The page received it; do not scroll it twice.
+
     class Window(MSFluentWindow):
         def __init__(self):
             super().__init__()
@@ -5227,6 +6854,23 @@ def launch_gui_v3() -> None:
             elif COFFEE_LOGO.is_file():
                 self.setWindowIcon(QIcon(str(COFFEE_LOGO)))
 
+            self._schedule_query_closed = False
+            self._schedule_query_active = False
+            self._schedule_query_pending = False
+            self._schedule_query_timed_out = False
+            self._schedule_query_diagnostic = None
+            self.schedule_query = QProcess(self)
+            self.schedule_query.setProcessChannelMode(QProcess.MergedChannels)
+            self.schedule_query.finished.connect(self._schedule_query_finished)
+            self.schedule_query.errorOccurred.connect(self._schedule_query_error)
+            self.schedule_query_timeout = QTimer(self)
+            self.schedule_query_timeout.setSingleShot(True)
+            self.schedule_query_timeout.setInterval(10000)
+            self.schedule_query_timeout.timeout.connect(self._schedule_query_timeout)
+            self.schedule_query_debounce = QTimer(self)
+            self.schedule_query_debounce.setSingleShot(True)
+            self.schedule_query_debounce.setInterval(250)
+            self.schedule_query_debounce.timeout.connect(self._start_schedule_query)
             self.home_page = BackgroundPage(self, "homePage")
             self.task_page = BackgroundPage(self, "taskPage")
             self.invite_page = BackgroundPage(self, "invitePage")
@@ -5235,11 +6879,15 @@ def launch_gui_v3() -> None:
             self._build_task_page()
             self._build_invite_page()
             self._build_settings_page()
+            for switch in (self.cafe2, self.collect, self.invite, self.invite_exchange):
+                switch.checkedChanged.connect(lambda *_: self.persist_preferences())
+            self.rounds.valueChanged.connect(lambda *_: self._preferences_save_timer.start())
             self.addSubInterface(self.home_page, FIF.HOME, "主页")
             self.addSubInterface(self.task_page, FIF.PLAY, "任务信息")
             self.addSubInterface(self.invite_page, FIF.PEOPLE, "邀请学生")
             self.addSubInterface(self.settings_page, FIF.SETTING, "设置")
             self.update_home_immersive_state()
+            self.stackedWidget.currentChanged.connect(self._schedule_page_changed)
 
             self.worker = QProcess(self)
             self.worker.setProcessChannelMode(QProcess.MergedChannels)
@@ -5250,7 +6898,7 @@ def launch_gui_v3() -> None:
             self.worker.readyReadStandardOutput.connect(self.read_worker_output)
             self.worker.finished.connect(self.worker_finished)
             self.schedule_refresh_timer = QTimer(self)
-            self.schedule_refresh_timer.timeout.connect(self.refresh_schedule_defer_status)
+            self.schedule_refresh_timer.timeout.connect(self.refresh_schedule_status)
             self.schedule_refresh_timer.start(30000)
             qconfig.themeChanged.connect(lambda *_: self.refresh_visuals())
             self.refresh_priority()
@@ -5333,6 +6981,7 @@ def launch_gui_v3() -> None:
             self.showNormal()
             self.raise_()
             self.activateWindow()
+            self.refresh_schedule_indicator()
 
         def restore_window_position(self):
             x, y = settings.get("window_x"), settings.get("window_y")
@@ -5367,8 +7016,7 @@ def launch_gui_v3() -> None:
             self._force_quit = True
             self.persist_preferences()
             self.save_window_position()
-            if self.schedule_refresh_timer.isActive():
-                self.schedule_refresh_timer.stop()
+            self.stop_schedule_query()
             if self.worker.state() != QProcess.NotRunning:
                 self.worker.terminate()
                 if not self.worker.waitForFinished(3000):
@@ -5404,12 +7052,13 @@ def launch_gui_v3() -> None:
 
         def closeEvent(self, event):
             if self._force_quit:
+                self.stop_schedule_query()
                 self.tray_icon.hide()
                 event.accept()
                 return
             self.persist_preferences()
             self.save_window_position()
-            if (settings.get("minimize_to_tray", True)
+            if (settings.get("minimize_to_tray", DEFAULT_SETTINGS["minimize_to_tray"])
                     and QSystemTrayIcon.isSystemTrayAvailable()):
                 event.ignore()
                 self.hide()
@@ -5424,6 +7073,7 @@ def launch_gui_v3() -> None:
                     settings["tray_notice_seen"] = True
                     save_settings(settings)
                 return
+            self.stop_schedule_query()
             self.tray_icon.hide()
             if self._instance_server.isListening():
                 self._instance_server.close()
@@ -5452,9 +7102,9 @@ def launch_gui_v3() -> None:
                 try:
                     os.startfile(str(EASTER_EGG_FILE))
                 except OSError as exc:
-                    QMessageBox.warning(self, "彩蛋文档", f"无法打开彩蛋文档：{exc}")
+                    GuiMessageBox.warning(self, "彩蛋文档", f"无法打开彩蛋文档：{exc}")
             else:
-                QMessageBox.information(self, "彩蛋文档", "彩蛋文档暂未找到。")
+                GuiMessageBox.information(self, "彩蛋文档", "彩蛋文档暂未找到。")
 
         def _build_home_page(self):
             outer = QGridLayout(self.home_page)
@@ -5495,6 +7145,12 @@ def launch_gui_v3() -> None:
             self.cafe2 = self.add_switch(controls_layout, "处理 2 号咖啡厅", settings["cafe2"])
             self.collect = self.add_switch(controls_layout, "领取咖啡厅收益", settings["collect_reward"])
             self.invite = self.add_switch(controls_layout, "使用邀请券", settings["invite_student"])
+            self.invite_exchange = self.add_switch(
+                controls_layout, "允许邀请换装角色", settings["invite_allow_exchange_student"])
+            self.invite_exchange.setToolTip(
+                "同一学生的其他装扮已在咖啡厅时，允许按所选装扮替换。")
+            self.invite_exchange.setEnabled(self.invite.isChecked())
+            self.invite.checkedChanged.connect(self.invite_exchange.setEnabled)
             round_row = QHBoxLayout()
             round_row.addWidget(BodyLabel("最多摸头轮数"))
             round_row.addStretch(1)
@@ -5503,20 +7159,16 @@ def launch_gui_v3() -> None:
             self.rounds.setValue(settings["pat_rounds"])
             round_row.addWidget(self.rounds)
             controls_layout.addLayout(round_row)
-            rounds_note = BodyLabel("摸头轮数越多，越不容易漏摸。")
-            rounds_note.setObjectName("hintLabel")
-            controls_layout.addWidget(rounds_note)
+            self.rounds_note = BodyLabel("摸头轮数越多，越不容易漏摸。")
+            self.rounds_note.setObjectName("patRoundsHint")
+            controls_layout.addWidget(self.rounds_note)
             controls_layout.addStretch(1)
             self.status = StatusPill("就绪")
             controls_layout.addWidget(self.status)
             run_button = PrimaryPushButton("立即执行一次")
             run_button.setIcon(FIF.PLAY)
             run_button.clicked.connect(self.run_now)
-            save_button = PushButton("保存设置")
-            save_button.setIcon(FIF.SAVE)
-            save_button.clicked.connect(self.save_only)
             controls_layout.addWidget(run_button)
-            controls_layout.addWidget(save_button)
             columns.addWidget(controls, 4)
             logs, logs_layout = self.card("运行信息")
             self.log_box = TextEdit()
@@ -5658,9 +7310,27 @@ def launch_gui_v3() -> None:
             layout.addWidget(bg_actions)
             outer.addWidget(appearance)
 
+            self.game_updates_card, update_layout = self.card("游戏更新")
+            update_row = QHBoxLayout()
+            update_row.addWidget(BodyLabel("自动下载游戏更新"))
+            self.game_update_help = InstantHelpButton(
+                "打开此选项可自动下载游戏更新，无缝衔接版本更新后的自动化摸头。不过下载会消耗网络流量，"
+                "使用手机热点或按流量计费的网络时可能产生额外费用，请谨慎开启。")
+            self.game_update_help.setText("！")
+            self.game_update_help.setAccessibleName("游戏更新下载风险说明")
+            self.game_update_help.setFixedSize(18, 18)
+            update_row.addWidget(self.game_update_help)
+            update_row.addStretch(1)
+            self.auto_download_updates = SwitchButton()
+            self.auto_download_updates.setAccessibleName("自动下载游戏更新")
+            self.auto_download_updates.setOnText("开")
+            self.auto_download_updates.setOffText("关")
+            self.auto_download_updates.setChecked(bool(settings.get("auto_download_game_updates", False)))
+            update_row.addWidget(self.auto_download_updates)
+            update_layout.addLayout(update_row)
             behavior, behavior_layout = self.card("应用行为")
             self.minimize_to_tray = self.add_switch(
-                behavior_layout, "关闭窗口后驻留系统托盘", settings.get("minimize_to_tray", True))
+                behavior_layout, "关闭窗口后驻留系统托盘", settings.get("minimize_to_tray", DEFAULT_SETTINGS["minimize_to_tray"]))
             self.minimize_to_tray.checkedChanged.connect(self.toggle_tray_behavior)
             self.minimize_to_tray.setToolTip(
                 "关闭窗口后隐藏到系统托盘；需要退出时请使用托盘菜单。")
@@ -5700,7 +7370,7 @@ def launch_gui_v3() -> None:
             self.game_server.addItems(list(CN_GAME_SERVERS))
             self.game_server.setCurrentText(normalize_game_server(settings.get("game_server")))
             self.game_server.setFixedSize(130, 40)
-            self.mumu_vm_index = SpinBox()
+            self.mumu_vm_index = NoWheelSpinBox()
             self.mumu_vm_index.setRange(0, 31)
             self.mumu_vm_index.setValue(int(settings.get("mumu_vm_index", 1)))
             self.mumu_vm_index.setFixedSize(110, 40)
@@ -5710,10 +7380,10 @@ def launch_gui_v3() -> None:
             self.mumu_android_version.setCurrentText(
                 f"Android {version}" if version in {"12", "15"} else "自动")
             self.mumu_android_version.setFixedSize(150, 40)
-            self.mumu_start_wait = SpinBox()
+            self.mumu_start_wait = NoWheelSpinBox()
             self.mumu_start_wait.setRange(0, 300)
             self.mumu_start_wait.setSuffix(" 秒")
-            self.mumu_start_wait.setValue(int(settings.get("mumu_start_wait_seconds", 60)))
+            self.mumu_start_wait.setValue(int(settings.get("mumu_start_wait_seconds", DEFAULT_SETTINGS["mumu_start_wait_seconds"])))
             self.mumu_start_wait.setFixedSize(130, 40)
             emulator_layout.addSpacing(6)
             settings_grid = ResponsiveSettingsGrid()
@@ -5725,7 +7395,7 @@ def launch_gui_v3() -> None:
                 BodyLabel("启动等待"), self.mumu_start_wait)
             emulator_layout.addWidget(settings_grid)
             self.mumu_resolution_notice = BodyLabel(
-                "MuMu 模拟器虚拟机分辨率需设置为 1280 × 720")
+                "建议将 MuMu 模拟器虚拟机分辨率设置为 1920 × 1080")
             self.mumu_resolution_notice.setObjectName("mumuResolutionHint")
             self.mumu_resolution_notice.setWordWrap(True)
             self.mumu_resolution_notice.setFont(QFont("Microsoft YaHei UI", 10))
@@ -5736,7 +7406,7 @@ def launch_gui_v3() -> None:
             delay_label = BodyLabel("首次执行")
             self.schedule_delay_time = LineEdit()
             self.schedule_delay_time.setInputMask("00:00")
-            self.schedule_delay_time.setText(datetime.now().strftime("%H:%M"))
+            self.schedule_delay_time.setText((datetime.now() + timedelta(minutes=3)).strftime("%H:%M"))
             self.schedule_delay_time.setAlignment(Qt.AlignCenter)
             self.schedule_delay_time.setToolTip("目标时间格式：HH:mm，例如 16:49")
             self.schedule_delay_time.setFixedSize(112, 38)
@@ -5823,6 +7493,7 @@ def launch_gui_v3() -> None:
             schedule_layout.addLayout(indicator_row)
             outer.addWidget(schedule)
             outer.addWidget(emulator)
+            outer.addWidget(self.game_updates_card)
             outer.addWidget(behavior)
             self.game_server.currentTextChanged.connect(lambda *_: self.persist_preferences())
             self.mumu_vm_index.valueChanged.connect(lambda *_: self.persist_preferences())
@@ -5831,6 +7502,7 @@ def launch_gui_v3() -> None:
             self.mumu_start_wait.valueChanged.connect(lambda *_: self.persist_preferences())
             self.mumu_manager_path.editingFinished.connect(self.persist_preferences)
             self.hibernate.checkedChanged.connect(lambda *_: self.persist_preferences())
+            self.auto_download_updates.checkedChanged.connect(self.change_auto_download_updates)
             self.opacity.sliderReleased.connect(self.persist_preferences)
             outer.addStretch(1)
             outer.activate()
@@ -5914,18 +7586,17 @@ def launch_gui_v3() -> None:
                 immersive_border = "rgba(130,151,170,51)"
                 immersive_checked_border = "rgba(40,169,241,13)"
             setThemeColor(accent)
+            rounds_hint = QColor(hint_color)
+            rounds_hint.setAlphaF(0.6)
+            self.rounds_note.setStyleSheet(
+                f"QLabel#patRoundsHint {{ color: rgba({rounds_hint.red()},"
+                f"{rounds_hint.green()},{rounds_hint.blue()},{rounds_hint.alpha()}); "
+                "font-size: 11px; font-weight: 400; background: transparent; }")
             self._accent_color = accent
-            neutral_rgb = "247,248,251" if isDarkTheme() else "32,36,43"
-            help_button_style = (
-                f"QToolButton {{ color: {hint_color}; background-color: transparent; "
-                f"border: 1px solid rgba({neutral_rgb},110); "
-                "border-radius: 9px; font-family: 'Segoe UI'; font-size: 11px; "
-                "font-weight: 500; padding: 0; }"
-                f"QToolButton:hover, QToolButton:focus {{ color: {accent}; "
-                f"background-color: rgba({neutral_rgb},12); "
-                f"border-color: {accent}; }}")
-            for help_button in (self.schedule_delay_info, self.mumu_help):
-                help_button.setStyleSheet(help_button_style)
+            help_ring_color = QColor("#F7F8FB" if isDarkTheme() else "#20242B")
+            help_ring_color.setAlpha(110)
+            for help_button in (self.schedule_delay_info, self.mumu_help, self.game_update_help):
+                help_button.set_colors(hint_color, help_ring_color, accent)
             self.mumu_resolution_notice.setStyleSheet(
                 f"QLabel#mumuResolutionHint {{ color: {accent}; "
                 "font-family: 'Microsoft YaHei UI'; font-size: 13px; "
@@ -6055,7 +7726,7 @@ def launch_gui_v3() -> None:
                 return
             manager = resolve_mumu_manager_in_directory(directory)
             if manager is None:
-                QMessageBox.warning(
+                GuiMessageBox.warning(
                     self, "未找到 MuMuManager.exe",
                     "在所选文件夹中未找到 MuMuManager.exe。\n"
                     "请选择 MuMu 模拟器主文件夹或 nx_main 文件夹。")
@@ -6088,13 +7759,43 @@ def launch_gui_v3() -> None:
             settings["bash_students_cafe2"] = list(self.priorities[1])
             save_settings_atomic(settings)
 
+        def change_auto_download_updates(self, enabled):
+            if enabled:
+                blocker = QSignalBlocker(self.auto_download_updates)
+                self.auto_download_updates.setChecked(False)
+                blocker.unblock()
+                box = GuiMessageBox(self)
+                box.setWindowTitle("确认开启自动下载游戏更新")
+                box.setIcon(GuiMessageBox.Warning)
+                box.setText(
+                    "开启后，BAC 会自动确认游戏内更新包下载，以便衔接版本更新后的自动化摸头。"
+                    "下载会消耗网络流量，使用手机热点或按流量计费的网络时可能产生额外费用。是否仍要开启？")
+                confirm = box.addButton("确认开启", GuiMessageBox.AcceptRole)
+                cancel = box.addButton("取消", GuiMessageBox.RejectRole)
+                confirm.setAutoDefault(False)
+                box.setDefaultButton(cancel)
+                box.setEscapeButton(cancel)
+                cancel.setFocus(Qt.OtherFocusReason)
+                box.exec_()
+                if box.clickedButton() is confirm:
+                    blocker = QSignalBlocker(self.auto_download_updates)
+                    self.auto_download_updates.setChecked(True)
+                    blocker.unblock()
+            self.persist_preferences()
+
         def persist_preferences(self):
             if self._preferences_save_timer.isActive():
                 self._preferences_save_timer.stop()
             settings.update({
+                "cafe2": self.cafe2.isChecked(),
+                "collect_reward": self.collect.isChecked(),
+                "invite_student": self.invite.isChecked(),
+                "invite_allow_exchange_student": self.invite_exchange.isChecked(),
+                "pat_rounds": self.rounds.value(),
                 "theme": text_theme.get(self.theme.currentText(), "system"),
                 "background_opacity": self.opacity.value(),
                 "minimize_to_tray": self.minimize_to_tray.isChecked(),
+                "auto_download_game_updates": self.auto_download_updates.isChecked(),
                 "game_server": normalize_game_server(self.game_server.currentText()),
                 "mumu_manager_path": self.mumu_manager_path.text().strip(),
                 "mumu_vm_index": self.mumu_vm_index.value(),
@@ -6104,7 +7805,10 @@ def launch_gui_v3() -> None:
                     if self.mumu_android_version.currentText() != "自动" else ""),
                 "hibernate_after_success": self.hibernate.isChecked(),
             })
-            save_settings_atomic(settings)
+            try:
+                save_settings_atomic(settings)
+            except Exception as exc:
+                GuiMessageBox.critical(self, "保存失败", str(exc))
 
         def open_selector(self, cafe_index):
             dialog = StudentSelectorDialog(self, self.priorities[cafe_index], cafe_index + 1)
@@ -6113,16 +7817,18 @@ def launch_gui_v3() -> None:
                 self.refresh_priority()
                 self.persist_invite_priorities()
 
-        def collect_settings(self):
+        def collect_settings(self, persist=True):
             settings.update({
                 "cafe2": self.cafe2.isChecked(),
                 "collect_reward": self.collect.isChecked(),
                 "invite_student": self.invite.isChecked(),
+                "invite_allow_exchange_student": self.invite_exchange.isChecked(),
                 "hibernate_after_success": self.hibernate.isChecked(),
                 "pat_rounds": self.rounds.value(),
                 "theme": text_theme.get(self.theme.currentText(), "system"),
                 "background_opacity": self.opacity.value(),
                 "minimize_to_tray": self.minimize_to_tray.isChecked(),
+                "auto_download_game_updates": self.auto_download_updates.isChecked(),
                 "game_server": normalize_game_server(self.game_server.currentText()),
                 "mumu_manager_path": self.mumu_manager_path.text().strip(),
                 "mumu_vm_index": self.mumu_vm_index.value(),
@@ -6133,22 +7839,22 @@ def launch_gui_v3() -> None:
                 "bash_students_cafe1": self.priorities[0],
                 "bash_students_cafe2": self.priorities[1],
             })
-            save_settings(settings)
-            prepare_profile(settings)
-
-        def save_only(self):
-            try:
-                self.collect_settings()
-                self.status.setText("设置已保存")
-            except Exception as exc:
-                QMessageBox.critical(self, "保存失败", str(exc))
+            if persist:
+                save_settings(settings)
+            return dict(settings)
 
         def run_now(self):
             try:
                 if self.worker.state() != QProcess.NotRunning:
-                    QMessageBox.information(self, "正在运行", "咖啡厅任务已经在执行。")
+                    GuiMessageBox.information(self, "正在运行", "咖啡厅任务已经在执行。")
                     return
-                self.collect_settings()
+                requested_settings = self.collect_settings(persist=False)
+                environment = QProcessEnvironment(self.worker.processEnvironment())
+                environment.insert(
+                    "BACOFFEE_MANUAL_SETTINGS",
+                    json.dumps(requested_settings, ensure_ascii=False),
+                )
+                self.worker.setProcessEnvironment(environment)
                 sanitize_external_runtime()
                 cmd = worker_command(False)
                 self.log_box.clear()
@@ -6160,79 +7866,113 @@ def launch_gui_v3() -> None:
                 self.game_server.setEnabled(False)
                 self.status.setText("正在执行咖啡厅任务")
             except Exception as exc:
-                QMessageBox.critical(self, "启动失败", str(exc))
+                GuiMessageBox.critical(self, "启动失败", str(exc))
 
         def read_worker_output(self):
             value = bytes(self.worker.readAllStandardOutput()).decode("utf-8", errors="replace").rstrip()
             if value:
                 self.log_box.append(value)
+                if "正在停止计划任务，准备手动执行" in value:
+                    self.status.setText("正在停止计划任务，准备手动执行")
+                elif "mode=manual" in value:
+                    self.status.setText("正在执行手动咖啡厅任务")
 
         def worker_finished(self, exit_code, _exit_status):
             self.read_worker_output()
             self.game_server.setEnabled(True)
             if exit_code == 0:
+                try:
+                    last_result = json.loads(RESULT_FILE.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    last_result = {}
+                if last_result.get("state") == "skipped_maintenance":
+                    self.status.setText("维护跳过")
+                    message = ("检测到服务器维护，本次任务已停止；后续任务会继续检查。"
+                               if last_result.get("maintenance_state_saved") else
+                               "检测到服务器维护，本次任务已停止；接续状态保存失败，请查看日志。")
+                    GuiMessageBox.information(self, "BACoffee", message)
+                    return
+                if last_result.get("state") == "skipped_update_download":
+                    self.status.setText("更新下载跳过")
+                    GuiMessageBox.information(
+                        self, "BACoffee", "已关闭自动下载，本次任务已跳过；后续计划保留。")
+                    return
                 self.status.setText("任务完成")
-                QMessageBox.information(self, "BACoffee", "咖啡厅任务已完成。")
+                message = "咖啡厅任务已完成。"
+                if last_result.get("cafe_recovery_count", 0) == 1:
+                    message += "\n期间自动恢复 1 次，详情见日志。"
+                GuiMessageBox.information(self, "BACoffee", message)
+            elif exit_code == 75:
+                self.status.setText("任务未启动：已有手动任务或交接未完成，请查看运行日志")
             else:
                 self.status.setText("任务失败，请查看运行日志")
-                QMessageBox.warning(self, "BACoffee", "任务没有完成，原因已显示在运行信息中。")
+                GuiMessageBox.warning(self, "BACoffee", "任务没有完成，原因已显示在运行信息中。")
 
         def install_task(self):
-            answer = QMessageBox.question(
-                self, "安装休眠唤醒计划",
-                "接下来 Windows 将显示 PowerShell 的管理员权限确认窗口。\n\n"
-                "该权限仅用于创建或更新 BACoffee 的计划任务，并启用系统唤醒计时器；"
-                "程序不会获取或保存你的管理员密码。是否继续？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                return
             try:
-                self.collect_settings()
-                result = _run_wake_task_update()
-                if result.returncode == 0:
-                    self.refresh_schedule_indicator()
-                    QMessageBox.information(self, "计划任务", "休眠唤醒计划已安装。")
-                else:
-                    QMessageBox.critical(self, "安装失败", result.stderr or result.stdout)
-            except Exception as exc:
-                QMessageBox.critical(self, "安装失败", str(exc))
+                answer = GuiMessageBox.question(
+                    self, "安装休眠唤醒计划",
+                    "接下来 Windows 将显示 PowerShell 的管理员权限确认窗口。\n\n"
+                    "该权限仅用于创建或更新 BACoffee 的计划任务，并启用系统唤醒计时器；"
+                    "程序不会获取或保存你的管理员密码。是否继续？",
+                    GuiMessageBox.Yes | GuiMessageBox.No, GuiMessageBox.No)
+                if answer != GuiMessageBox.Yes:
+                    return
+                try:
+                    self.collect_settings()
+                    success, error = restore_default_schedule()
+                    settings.clear()
+                    settings.update(load_settings())
+                    self.refresh_schedule_defer_status()
+                    if success:
+                        self.status.setText("按预设计划运行")
+                        GuiMessageBox.information(self, "计划任务", "已恢复八个每日默认唤醒计划。")
+                    else:
+                        self.status.setText("恢复默认计划失败，请查看提示")
+                        GuiMessageBox.critical(self, "安装失败", error)
+                except Exception as exc:
+                    GuiMessageBox.critical(self, "安装失败", str(exc))
+            finally:
+                self.refresh_schedule_indicator()
 
         def remove_task(self):
-            answer = QMessageBox.question(
-                self, "退出休眠唤醒计划",
-                "退出后，BACoffee 将不再按计划自动唤醒或定时运行。确定继续吗？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                return
             try:
-                ps = APP_DIR / "Remove-WakeTask.ps1"
-                if not ps.is_file():
-                    raise RuntimeError("发行内容不完整：缺少 Remove-WakeTask.ps1。")
-                result_path = Path(os.environ.get("TEMP", str(DATA_DIR))) / (
-                    f"BACoffee-remove-{os.getpid()}-{secrets.token_hex(6)}.json")
-                result_path.unlink(missing_ok=True)
-                result = subprocess.run(
-                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps),
-                     "-ResultPath", str(result_path)],
-                    text=True, capture_output=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                removal_result = {}
-                if result_path.is_file():
-                    try:
-                        removal_result = json.loads(result_path.read_text(encoding="utf-8-sig"))
-                    finally:
-                        result_path.unlink(missing_ok=True)
-                if removal_result.get("status") == "success":
-                    self.refresh_schedule_indicator()
-                    QMessageBox.information(
-                        self, "卸载已完成",
-                        "休眠唤醒计划卸载已完成。\nBACoffee 将不再自动唤醒电脑或按计划运行。")
-                else:
-                    details = (removal_result.get("message") or result.stderr or result.stdout or
-                               f"卸载程序返回错误代码 {result.returncode}，计划可能尚未移除。")
-                    QMessageBox.critical(self, "退出失败", details)
-            except Exception as exc:
-                QMessageBox.critical(self, "退出失败", str(exc))
+                answer = GuiMessageBox.question(
+                    self, "退出休眠唤醒计划",
+                    "退出后，BACoffee 将不再按计划自动唤醒或定时运行。确定继续吗？",
+                    GuiMessageBox.Yes | GuiMessageBox.No, GuiMessageBox.No)
+                if answer != GuiMessageBox.Yes:
+                    return
+                try:
+                    ps = APP_DIR / "Remove-WakeTask.ps1"
+                    if not ps.is_file():
+                        raise RuntimeError("发行内容不完整：缺少 Remove-WakeTask.ps1。")
+                    result_path = Path(os.environ.get("TEMP", str(DATA_DIR))) / (
+                        f"BACoffee-remove-{os.getpid()}-{secrets.token_hex(6)}.json")
+                    result_path.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps),
+                         "-ResultPath", str(result_path)],
+                        text=True, capture_output=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    removal_result = {}
+                    if result_path.is_file():
+                        try:
+                            removal_result = json.loads(result_path.read_text(encoding="utf-8-sig"))
+                        finally:
+                            result_path.unlink(missing_ok=True)
+                    if removal_result.get("status") == "success":
+                        GuiMessageBox.information(
+                            self, "卸载已完成",
+                            "休眠唤醒计划卸载已完成。\nBACoffee 将不再自动唤醒电脑或按计划运行。")
+                    else:
+                        details = (removal_result.get("message") or result.stderr or result.stdout or
+                                   f"卸载程序返回错误代码 {result.returncode}，计划可能尚未移除。")
+                        GuiMessageBox.critical(self, "退出失败", details)
+                except Exception as exc:
+                    GuiMessageBox.critical(self, "退出失败", str(exc))
+            finally:
+                self.refresh_schedule_indicator()
 
         @staticmethod
         def schedule_target_text(target):
@@ -6268,60 +8008,153 @@ def launch_gui_v3() -> None:
 
         def defer_next_schedule(self):
             try:
-                now = datetime.now()
                 try:
-                    selected_time = datetime.strptime(
-                        self.schedule_delay_time.text().strip(), "%H:%M")
-                except ValueError:
-                    QMessageBox.warning(self, "时间格式不正确", "请输入 HH:mm 格式，例如 16:49。")
-                    return
-                target = resolve_first_deferred_time(
-                    now, selected_time.hour, selected_time.minute)
-                period_start, period_end = schedule_window(now)
-                runs = build_deferred_runs(target, period_end)
-                run_text = "、".join(self.schedule_target_text(item) for item in runs)
-                reset_text = (
-                    f"{period_end:%H:%M} 起恢复预设计划"
-                    if period_end.date() == now.date()
-                    else f"明天 {period_end:%H:%M} 起恢复预设计划")
-                period_text = f"{period_start:%Y-%m-%d %H:%M} 至 {period_end:%Y-%m-%d %H:%M}"
-                answer = QMessageBox.question(
-                    self, "确认推迟当前时段",
-                    f"当前时段：{period_text}\n"
-                    f"本时段临时计划：{run_text}\n"
-                    f"{reset_text}\n\n"
-                    "确认后会申请管理员权限，立即更新 Windows 唤醒计划。是否继续？",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-                if answer != QMessageBox.Yes:
-                    return
-                override = {
-                    "period_start": period_start.isoformat(timespec="seconds"),
-                    "period_end": period_end.isoformat(timespec="seconds"),
-                    "first_run": target.isoformat(timespec="seconds"),
-                    "run_times": [item.isoformat(timespec="seconds") for item in runs],
-                    "applied": False,
-                    "updated_at": now.isoformat(timespec="seconds"),
-                }
-                success, error = apply_schedule_override(override)
-                settings.clear()
-                settings.update(load_settings())
-                if not success:
+                    now = datetime.now()
+                    try:
+                        selected_time = datetime.strptime(
+                            self.schedule_delay_time.text().strip(), "%H:%M")
+                    except ValueError:
+                        GuiMessageBox.warning(self, "时间格式不正确", "请输入 HH:mm 格式，例如 16:49。")
+                        return
+                    target = resolve_first_deferred_time(
+                        now, selected_time.hour, selected_time.minute)
+                    period_start, period_end = schedule_window(now)
+                    runs = build_deferred_runs(target, period_end)
+                    run_text = "、".join(self.schedule_target_text(item) for item in runs)
+                    reset_text = (
+                        f"{period_end:%H:%M} 起恢复预设计划"
+                        if period_end.date() == now.date()
+                        else f"明天 {period_end:%H:%M} 起恢复预设计划")
+                    period_text = f"{period_start:%Y-%m-%d %H:%M} 至 {period_end:%Y-%m-%d %H:%M}"
+                    answer = GuiMessageBox.question(
+                        self, "确认推迟当前时段",
+                        f"当前时段：{period_text}\n"
+                        f"本时段临时计划：{run_text}\n"
+                        f"{reset_text}\n\n"
+                        "确认后会申请管理员权限，立即更新 Windows 唤醒计划。是否继续？",
+                        GuiMessageBox.Yes | GuiMessageBox.No, GuiMessageBox.No)
+                    if answer != GuiMessageBox.Yes:
+                        return
+                    override = {
+                        "period_start": period_start.isoformat(timespec="seconds"),
+                        "period_end": period_end.isoformat(timespec="seconds"),
+                        "first_run": target.isoformat(timespec="seconds"),
+                        "run_times": [item.isoformat(timespec="seconds") for item in runs],
+                        "applied": False,
+                        "updated_at": now.isoformat(timespec="seconds"),
+                    }
+                    success, error = apply_schedule_override(override)
+                    settings.clear()
+                    settings.update(load_settings())
+                    if not success:
+                        self.refresh_schedule_defer_status()
+                        self.status.setText("按预设时间（推迟未应用）")
+                        GuiMessageBox.critical(self, "推迟失败", error)
+                        return
                     self.refresh_schedule_defer_status()
-                    self.status.setText("按预设时间（推迟未应用）")
-                    QMessageBox.critical(self, "推迟失败", error)
-                    return
-                self.refresh_schedule_defer_status()
+                    self.status.setText("本时段计划已更新")
+                    GuiMessageBox.information(
+                        self, "计划任务", f"本时段计划已更新。\n{run_text}\n{reset_text}")
+                except Exception as exc:
+                    GuiMessageBox.critical(self, "推迟失败", str(exc))
+            finally:
                 self.refresh_schedule_indicator()
-                self.status.setText("本时段计划已更新")
-                QMessageBox.information(
-                    self, "计划任务", f"本时段计划已更新。\n{run_text}\n{reset_text}")
-            except Exception as exc:
-                QMessageBox.critical(self, "推迟失败", str(exc))
+
+        def event(self, event):
+            if event.type() == QEvent.WindowActivate and hasattr(self, "schedule_query_debounce"):
+                self.refresh_schedule_indicator()
+            return super().event(event)
+
+        def _schedule_page_changed(self, *_):
+            if self.stackedWidget.currentWidget() is self.settings_page:
+                self.refresh_schedule_indicator()
+
+        def refresh_schedule_status(self):
+            self.refresh_schedule_defer_status()
+            self.refresh_schedule_indicator()
 
         def refresh_schedule_indicator(self):
-            installed = is_wake_task_installed()
-            if hasattr(self, "schedule_indicator"):
-                self.schedule_indicator.set_installed(installed)
+            if self._schedule_query_closed:
+                return
+            if self._schedule_query_active:
+                self._schedule_query_pending = True
+            elif not self.schedule_query_debounce.isActive():
+                self.schedule_query_debounce.start()
+
+        def _start_schedule_query(self):
+            if self._schedule_query_closed or self._schedule_query_active:
+                return
+            self.schedule_query.readAllStandardOutput()
+            self._schedule_query_active = True
+            self._schedule_query_pending = False
+            self._schedule_query_timed_out = False
+            # One read-only COM lookup: HRESULT identifies absence independent of OS language.
+            command = (
+                "$ErrorActionPreference='Stop'; $r=@{state='unknown';code='query'}; "
+                "try { $s=New-Object -ComObject Schedule.Service; $s.Connect(); $f=$s.GetFolder('\\'); "
+                "try { $t=$f.GetTask('BACoffee-Cafe'); $r=@{state='installed';code='0'} } "
+                "catch { $e=$_.Exception; while($e.InnerException){$e=$e.InnerException}; "
+                "if($e.HResult -eq -2147024894){$r=@{state='missing';code='80070002'}} "
+                "else {$r=@{state='unknown';code=('{0:X8}' -f $e.HResult)}} } } "
+                "catch { $e=$_.Exception; while($e.InnerException){$e=$e.InnerException}; "
+                "$r=@{state='unknown';code=('{0:X8}' -f $e.HResult)} }; $r | ConvertTo-Json -Compress")
+            program = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) /
+                          "System32/WindowsPowerShell/v1.0/powershell.exe")
+            self.schedule_query_timeout.start()
+            self.schedule_query.start(program, ["-NoProfile", "-NonInteractive", "-Command", command])
+
+        def _schedule_query_error(self, error):
+            if error == QProcess.FailedToStart:
+                self._finish_schedule_query(None, "start")
+
+        def _schedule_query_timeout(self):
+            if self._schedule_query_active:
+                self._schedule_query_timed_out = True
+                self.schedule_query.kill()
+
+        def _schedule_query_finished(self, exit_code, exit_status):
+            if not self._schedule_query_active:
+                return
+            state, diagnostic = None, "query"
+            if self._schedule_query_timed_out:
+                diagnostic = "timeout"
+            elif exit_code == 0 and exit_status == QProcess.NormalExit:
+                try:
+                    result = json.loads(bytes(self.schedule_query.readAllStandardOutput()).decode("utf-8-sig"))
+                    state = {"installed": True, "missing": False}.get(result.get("state"))
+                    diagnostic = str(result.get("code", "query"))[:32]
+                except (ValueError, UnicodeError, AttributeError):
+                    diagnostic = "response"
+            self._finish_schedule_query(state, diagnostic)
+
+        def _finish_schedule_query(self, installed, diagnostic):
+            if not self._schedule_query_active:
+                return
+            self._schedule_query_active = False
+            self.schedule_query_timeout.stop()
+            if self._schedule_query_closed:
+                return
+            self.schedule_indicator.set_installed(installed)
+            if installed is None:
+                self.schedule_indicator.setToolTip(f"状态未知：计划查询暂不可用（{diagnostic}）")
+                if diagnostic != self._schedule_query_diagnostic:
+                    append_log(f"[计划状态] 查询暂不可用（{diagnostic}）")
+                self._schedule_query_diagnostic = diagnostic
+            else:
+                self._schedule_query_diagnostic = None
+            if self._schedule_query_pending:
+                self._schedule_query_pending = False
+                self.schedule_query_debounce.start()
+
+        def stop_schedule_query(self):
+            self._schedule_query_closed = True
+            self._schedule_query_pending = False
+            self.schedule_query_debounce.stop()
+            self.schedule_query_timeout.stop()
+            if hasattr(self, "schedule_refresh_timer"):
+                self.schedule_refresh_timer.stop()
+            if self.schedule_query.state() != QProcess.NotRunning:
+                self.schedule_query.kill()
 
     window = Window()
     window_ref[0] = window
@@ -6329,9 +8162,50 @@ def launch_gui_v3() -> None:
     app.exec_()
 
 
+def launch_sat_mode() -> int:
+    """Dispatch before BAC's GUI lock; SAT owns its own Qt application/process."""
+    if getattr(sys, "frozen", False):
+        require_portable_install()
+        compatibility = source_compatibility_diagnostic()
+        if not compatibility.get("ok"):
+            raise RuntimeError("BACoffee shared host/source mismatch; SAT refused.")
+        metadata_path = APP_DIR / "sat-build-metadata.json"
+        expected = _load_build_metadata().get("sat_metadata_sha256")
+        if not expected or _sha256_file(metadata_path) != expected:
+            raise RuntimeError("SAT build metadata mismatch; launch refused.")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        for entry in metadata["sources"].values():
+            if _sha256_file(APP_DIR / entry["candidate"]) != entry["sha256"]:
+                raise RuntimeError("SAT source mismatch; launch refused.")
+    else:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sat"))
+    add_runtime_site_packages()
+    # Resolve native dependencies from the unchanged portable image runtime.
+    if hasattr(os, "add_dll_directory"):
+        handles = [os.add_dll_directory(str(path)) for path in (
+            RUNTIME_DIR, PORTABLE_SITE_PACKAGES / "numpy" / ".libs",
+            PORTABLE_SITE_PACKAGES / "cv2") if path.is_dir()]
+    from user_avatar_import_tool import main as sat_main
+    from user_avatar_import_tool import _write_self_test_stage, _flush_diagnostic_streams
+    arguments = sys.argv[2:]
+    allowed = {"--self-test", "--layout-self-test"}
+    if any(argument not in allowed for argument in arguments):
+        raise RuntimeError("Unsupported SAT argument.")
+    sys.argv = [str(APP_DIR / "BACoffee SAT.exe"), *arguments]
+    code = sat_main()
+    if any(argument in allowed for argument in arguments):
+        _write_self_test_stage("7 about to exit shared SAT process")
+        _flush_diagnostic_streams()
+        os._exit(code)
+    return code
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["--sat"]:
+        return launch_sat_mode()
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", action="store_true")
+    parser.add_argument("--worker-payload", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--scheduled", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--test-mumu-environment", action="store_true")
@@ -6354,8 +8228,7 @@ def main() -> int:
         if not compatibility.get("ok"):
             print("[启动失败] EXE与旁置源码版本不一致，拒绝委托执行。")
             return 3
-        settings = load_settings()
-        python = Path(settings.get("baas_python", ""))
+        python = PORTABLE_PYTHON
         source = APP_DIR / "BACoffee.py"
         if python.is_file() and source.is_file():
             delegated = [str(python), "-X", "utf8", str(source)]
@@ -6387,6 +8260,8 @@ def main() -> int:
         return hibernate_helper(args.hibernate_delay, args.hibernate_request_id)
     if args.timeout_recovery_helper:
         return timeout_recovery_helper(args.hibernate_after_timeout)
+    if args.worker_payload:
+        return worker_payload(args.scheduled)
     if args.worker:
         return run_worker(args.scheduled)
     launch_gui_v3()

@@ -89,7 +89,12 @@ TOOL_ROOT = (
     else Path(__file__).resolve().parents[1]
 )
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
-ASSET_DIR = BUNDLE_ROOT / "assets"
+ASSET_DIR = (TOOL_ROOT / "assets" / "sat" if getattr(sys, "frozen", False)
+             else BUNDLE_ROOT / "assets")
+BRAND_FONT = (TOOL_ROOT / "assets" / "fonts" / "Comfortaa-Light.ttf"
+              if getattr(sys, "frozen", False) else ASSET_DIR / "Comfortaa-Light.ttf")
+PURE_BACKGROUND_ICON = (TOOL_ROOT / "assets" / "ui" / "coffee_bean.png"
+                        if getattr(sys, "frozen", False) else ASSET_DIR / "coffee_bean.png")
 PRODUCT_NAME = "BACoffee Student Add Tool"
 PRODUCT_SHORT_NAME = "SAT"
 IMPORT_SUCCESS_NOTICE = (
@@ -1027,14 +1032,6 @@ class UserAvatarImportWindow(MSFluentWindow):
 
     def _load_font(self) -> None:
         app = QApplication.instance()
-        bundled_cjk = ASSET_DIR / "SimHei.ttf"
-        if bundled_cjk.is_file():
-            font_id = QFontDatabase.addApplicationFont(str(bundled_cjk))
-            if font_id >= 0:
-                families = QFontDatabase.applicationFontFamilies(font_id)
-                if families:
-                    app.setFont(QFont(families[0], 10))
-                    return
         available = set(QFontDatabase().families())
         for family in ("Microsoft YaHei UI", "Microsoft YaHei", "DengXian", "SimSun"):
             if family in available:
@@ -1043,7 +1040,7 @@ class UserAvatarImportWindow(MSFluentWindow):
 
     def _load_brand_font(self) -> str | None:
         """Load the bundled display font for the large homepage brand only."""
-        font_path = ASSET_DIR / "Comfortaa-Light.ttf"
+        font_path = BRAND_FONT
         if not font_path.is_file():
             return None
         try:
@@ -1137,7 +1134,7 @@ class UserAvatarImportWindow(MSFluentWindow):
         theme_buttons = QHBoxLayout()
         theme_buttons.setSpacing(4)
         self.pure_background_button = PureBackgroundButton(
-            ASSET_DIR / "coffee_bean.png")
+            PURE_BACKGROUND_ICON)
         self.pure_background_button.setObjectName("pureBackgroundButton")
         self.pure_background_button.clicked.connect(
             lambda checked: self.set_pure_background(checked, save=True))
@@ -1505,6 +1502,14 @@ class UserAvatarImportWindow(MSFluentWindow):
 
         # The compact row belongs to the main card and may scroll with it at
         # the minimum window size; it must not be treated as a fixed bottom bar.
+        for widget, label in ((self.main_operation_card, "主卡片"),
+                              (self.name_edit, "名称输入"),
+                              (self.import_button, "导入按钮"),
+                              (self.original_preview, "原图预览"),
+                              (self.normalized_preview, "规范化预览")):
+            visible_inside_scroll_content(widget, label)
+        if self._content_layout_locked or not self.main_scroll.widget().layout().isEnabled():
+            errors.append("内容布局仍被冻结")
         visible_inside_scroll_content(self.operation_row, "主卡片底部操作行")
         visible_inside_scroll_content(self.pure_background_button, "纯净背景按钮")
         if not self.pure_background:
@@ -1707,41 +1712,57 @@ class UserAvatarImportWindow(MSFluentWindow):
             return
         for layout in getattr(self, "_locked_content_layouts", []):
             layout.setEnabled(True)
+            layout.invalidate()
         self._locked_content_layouts = []
         self._content_layout_locked = False
+        self._update_content_geometry()
+        QTimer.singleShot(0, self._update_content_geometry)
+
+    def _update_content_geometry(self) -> None:
+        content = self.main_scroll.widget()
+        for widget in reversed((content, *content.findChildren(QWidget))):
+            layout = widget.layout()
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+            widget.updateGeometry()
+        self.main_scroll.updateGeometry()
 
     def apply_theme(self, *, preserve_layout: bool = False) -> None:
         if preserve_layout:
             self._lock_content_layout()
-        style_sheet = self._stylesheet()
-        self.setStyleSheet(style_sheet)
-        # Keep the compact operation row's state selectors local to the
-        # scroll-content branch.  This preserves enabled/disabled QSS colors
-        # for the primary action while theme changes still re-polish it once.
-        if hasattr(self, "operation_row"):
-            self.operation_row.setStyleSheet(style_sheet)
-        self._apply_homepage_card_visuals()
-        self._refresh_opacity_cards()
-        p = PALETTES[self.current_theme]
-        self._refresh_brand_subtitle()
-        self.pure_background_button.set_theme(p["accent"])
-        self._apply_title_bar_theme(p)
-        current_label = "深色" if self.current_theme == "dark" else "浅色"
-        target_label = "浅色" if self.current_theme == "dark" else "深色"
-        self.theme_toggle_button.setText(current_label)
-        self.theme_toggle_button.setToolTip(f"切换为{target_label}")
-        self.theme_toggle_button.setAccessibleName(
-            f"主题切换，当前{current_label}，点击切换为{target_label}")
-        self.theme_toggle_button.setChecked(True)
-        for preview in (self.original_preview, self.normalized_preview,
-                        self.existing_preview):
-            preview.set_theme(p, self.card_opacity)
-        for animator in self._win11_scrollbars:
-            animator.set_theme(p["accent"], self.current_theme == "dark")
-        self.background.theme = self.current_theme
-        self.background.set_overlay_transparency(self.overlay_transparency)
-        self.background.update()
-        self.apply_native_title_bar(self)
+        try:
+            style_sheet = self._stylesheet()
+            self.setStyleSheet(style_sheet)
+            # Keep the compact operation row's state selectors local to the
+            # scroll-content branch.  This preserves enabled/disabled QSS colors
+            # for the primary action while theme changes still re-polish it once.
+            if hasattr(self, "operation_row"):
+                self.operation_row.setStyleSheet(style_sheet)
+            self._apply_homepage_card_visuals()
+            self._refresh_opacity_cards()
+            p = PALETTES[self.current_theme]
+            self._refresh_brand_subtitle()
+            self.pure_background_button.set_theme(p["accent"])
+            self._apply_title_bar_theme(p)
+            current_label = "深色" if self.current_theme == "dark" else "浅色"
+            target_label = "浅色" if self.current_theme == "dark" else "深色"
+            self.theme_toggle_button.setText(current_label)
+            self.theme_toggle_button.setToolTip(f"切换为{target_label}")
+            self.theme_toggle_button.setAccessibleName(
+                f"主题切换，当前{current_label}，点击切换为{target_label}")
+            self.theme_toggle_button.setChecked(True)
+            for preview in (self.original_preview, self.normalized_preview,
+                            self.existing_preview):
+                preview.set_theme(p, self.card_opacity)
+            for animator in self._win11_scrollbars:
+                animator.set_theme(p["accent"], self.current_theme == "dark")
+            self.background.theme = self.current_theme
+            self.background.set_overlay_transparency(self.overlay_transparency)
+            self.background.update()
+            self.apply_native_title_bar(self)
+        finally:
+            self._release_content_layout()
 
     def _apply_title_bar_theme(self, palette: dict[str, str]) -> None:
         """Keep the BAC Fluent title bar transparent and theme-synchronous."""
